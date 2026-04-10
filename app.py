@@ -35,19 +35,25 @@ html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; }
 .main-header h1 { margin: 0; font-size: 1.55rem; font-weight: 700; letter-spacing: -0.5px; }
 .main-header p  { margin: 0.35rem 0 0; opacity: 0.72; font-size: 0.85rem; }
 
-/* 선정 건설사 스크롤 박스 */
-.company-scroll-box {
-    background: white;
-    border: 1px solid #dde2ea;
-    border-radius: 10px;
-    max-height: 220px;
+/* multiselect 드롭다운 높이 제한 → 스크롤 박스처럼 동작 */
+div[data-testid="stSidebar"] div[data-baseweb="select"] > div:first-child {
+    max-height: 180px;
     overflow-y: auto;
-    padding: 6px 4px;
-    margin-bottom: 6px;
+    flex-wrap: wrap;
 }
-.company-scroll-box::-webkit-scrollbar { width: 5px; }
-.company-scroll-box::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 10px; }
-.company-scroll-box::-webkit-scrollbar-thumb { background: #c0ccd8; border-radius: 10px; }
+div[data-testid="stSidebar"] div[data-baseweb="select"] > div:first-child::-webkit-scrollbar { width: 4px; }
+div[data-testid="stSidebar"] div[data-baseweb="select"] > div:first-child::-webkit-scrollbar-thumb {
+    background: #c0ccd8; border-radius: 4px;
+}
+/* 선택된 태그 스타일 */
+div[data-testid="stSidebar"] span[data-baseweb="tag"] {
+    background-color: #0f3460 !important;
+    border-radius: 20px !important;
+}
+div[data-testid="stSidebar"] span[data-baseweb="tag"] span {
+    color: white !important;
+    font-size: 0.72rem !important;
+}
 
 .news-card {
     background: white; border: 1px solid #e8ecf0;
@@ -305,27 +311,30 @@ def collect_all_news(companies, extra_kw, per_query, date_from=None, date_to=Non
 with st.sidebar:
     st.markdown("### ⚙️ 검색 설정")
 
-    # ── 선정 건설사 (스크롤 가능한 옵션박스) ────────────────────────────────
+    # ── 선정 건설사 (multiselect 스크롤 옵션박스) ───────────────────────────
     st.markdown("#### 🏢 선정 건설사")
 
-    # 스크롤 컨테이너 안에 체크박스 렌더
-    st.markdown('<div class="company-scroll-box">', unsafe_allow_html=True)
-    for company in st.session_state.company_pool:
-        is_checked = company in st.session_state.company_selected
-        checked    = st.checkbox(company, value=is_checked, key=f"chk_{company}")
-        if checked and company not in st.session_state.company_selected:
-            st.session_state.company_selected.append(company)
-            save_companies(st.session_state.company_pool, st.session_state.company_selected)
-        elif not checked and company in st.session_state.company_selected:
-            st.session_state.company_selected.remove(company)
-            save_companies(st.session_state.company_pool, st.session_state.company_selected)
-    st.markdown('</div>', unsafe_allow_html=True)
+    # multiselect: 선택된 값이 바뀔 때마다 세션+파일에 저장
+    selected_now = st.multiselect(
+        "건설사 선택 (스크롤하여 모두 확인)",
+        options=st.session_state.company_pool,
+        default=[c for c in st.session_state.company_selected
+                 if c in st.session_state.company_pool],
+        key="ms_companies",
+        label_visibility="collapsed",
+    )
+    # 변경 감지 후 저장
+    if selected_now != st.session_state.company_selected:
+        st.session_state.company_selected = selected_now
+        save_companies(st.session_state.company_pool, st.session_state.company_selected)
 
-    # 건설사 직접 추가 (form으로 엔터 처리)
+    # 건설사 직접 추가
+    st.markdown("**➕ 건설사 직접 추가**")
     with st.form("add_company_form", clear_on_submit=True):
         new_company = st.text_input(
-            "➕ 건설사 추가",
-            placeholder="예: 태영건설  (입력 후 추가 클릭)",
+            "건설사명",
+            placeholder="예: 태영건설",
+            label_visibility="collapsed",
         )
         submitted = st.form_submit_button("추가하기", use_container_width=True)
         if submitted and new_company.strip():
@@ -335,7 +344,7 @@ with st.sidebar:
             if name not in st.session_state.company_selected:
                 st.session_state.company_selected.append(name)
             save_companies(st.session_state.company_pool, st.session_state.company_selected)
-            st.success(f"'{name}' 추가 완료!")
+            st.success(f"✅ '{name}' 추가 완료!")
             st.rerun()
 
     st.markdown("---")
@@ -388,7 +397,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # 선정 건설사 태그 표시
-selected = st.session_state.company_selected
+selected = st.session_state.get("ms_companies", st.session_state.company_selected)
 if selected:
     tags = "".join(
         f'<span style="display:inline-block;background:#0f3460;color:white;'
