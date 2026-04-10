@@ -1,6 +1,8 @@
 import streamlit as st
 import feedparser
 import pandas as pd
+import json
+import os
 from datetime import datetime, timedelta, date
 import urllib.parse
 import time
@@ -64,10 +66,17 @@ html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; }
     font-size: 0.95rem; font-weight: 700; color: #1a1a2e;
     border-left: 4px solid #0f3460; padding-left: 0.65rem; margin: 1rem 0 0.7rem;
 }
-.company-tag {
-    display: inline-block; background: #e8f0ff; color: #2c4a8a;
-    border-radius: 20px; padding: 3px 11px;
-    font-size: 0.75rem; font-weight: 500; margin: 2px;
+.company-selected {
+    display: inline-flex; align-items: center;
+    background: #0f3460; color: white;
+    border-radius: 20px; padding: 4px 12px;
+    font-size: 0.75rem; font-weight: 500; margin: 3px;
+}
+.company-unselected {
+    display: inline-flex; align-items: center;
+    background: #f0f4ff; color: #4a6fa5;
+    border-radius: 20px; padding: 4px 12px;
+    font-size: 0.75rem; font-weight: 500; margin: 3px;
 }
 div[data-testid="stSidebar"] { background: #f7f9fc; }
 </style>
@@ -82,15 +91,43 @@ KEYWORDS_REDEV   = ["재개발", "재건축", "정비사업", "뉴타운", "도�
 KEYWORDS_ORDER   = ["수주", "신규공사", "공사계약", "낙찰", "착공", "시공권"]
 KEYWORDS_HOUSING = ["분양", "아파트", "주택사업", "공동주택", "단지"]
 
+SAVE_FILE = "companies.json"
+
+# ── 건설사 저장/로드 (파일 기반 영구 저장) ──────────────────────────────────
+def load_companies() -> dict:
+    """저장된 건설사 목록 로드. 없으면 기본값 반환."""
+    if os.path.exists(SAVE_FILE):
+        try:
+            with open(SAVE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                # 기본 건설사 중 누락된 것 보충
+                for c in DEFAULT_COMPANIES:
+                    if c not in data["pool"]:
+                        data["pool"].append(c)
+                return data
+        except Exception:
+            pass
+    return {
+        "pool": DEFAULT_COMPANIES.copy(),
+        "selected": DEFAULT_COMPANIES[:5].copy(),
+    }
+
+def save_companies(pool: list, selected: list):
+    """건설사 목록을 파일에 저장."""
+    try:
+        with open(SAVE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"pool": pool, "selected": selected}, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
 # ── 세션 상태 초기화 ─────────────────────────────────────────────────────────
-if "df" not in st.session_state:
-    st.session_state.df = pd.DataFrame()
-if "last_run" not in st.session_state:
-    st.session_state.last_run = None
-if "company_pool" not in st.session_state:
-    st.session_state.company_pool = DEFAULT_COMPANIES.copy()
-if "selected_companies" not in st.session_state:
-    st.session_state.selected_companies = DEFAULT_COMPANIES[:5].copy()
+if "initialized" not in st.session_state:
+    data = load_companies()
+    st.session_state.company_pool     = data["pool"]
+    st.session_state.company_selected = data["selected"]
+    st.session_state.df               = pd.DataFrame()
+    st.session_state.last_run         = None
+    st.session_state.initialized      = True
 
 # ── 유틸 ────────────────────────────────────────────────────────────────────
 def clean_html(raw: str) -> str:
@@ -99,7 +136,7 @@ def clean_html(raw: str) -> str:
 def highlight_keywords(text: str, keywords: list) -> list:
     return [kw for kw in keywords if kw in text]
 
-def parse_pub_date(entry) -> datetime:
+def parse_pub_date(entry):
     pp = entry.get("published_parsed")
     if pp:
         try:
@@ -109,11 +146,9 @@ def parse_pub_date(entry) -> datetime:
     return None
 
 def fmt_date(dt) -> str:
-    if dt is None:
-        return ""
-    return dt.strftime("%Y.%m.%d %H:%M")
+    return dt.strftime("%Y.%m.%d %H:%M") if dt else ""
 
-def get_date_range(period: str, custom_start=None, custom_end=None):
+def get_date_range(period, custom_start=None, custom_end=None):
     now = datetime.now()
     if period == "하루":
         return now - timedelta(days=1), now
@@ -128,25 +163,19 @@ def get_date_range(period: str, custom_start=None, custom_end=None):
         )
     return None, None
 
-# ── 네이버 뉴스 수집 ─────────────────────────────────────────────────────────
-def fetch_naver_news(query: str, display: int = 20,
-                     date_from=None, date_to=None) -> list:
-    import os
-    results  = []
-    encoded  = urllib.parse.quote(query)
-    cid      = os.environ.get("NAVER_CLIENT_ID", "")
-    csecret  = os.environ.get("NAVER_CLIENT_SECRET", "")
+# ── 뉴스 수집 ────────────────────────────────────────────────────────────────
+def fetch_naver_news(query: str, display: int = 20, date_from=None, date_to=None) -> list:
+    results = []
+    encoded = urllib.parse.quote(query)
 
-    # ① 네이버 Open API (API 키 있을 때)
+    # ① 네이버 Open API (환경변수 있을 때)
+    cid     = os.environ.get("NAVER_CLIENT_ID", "")
+    csecret = os.environ.get("NAVER_CLIENT_SECRET", "")
     if cid and csecret:
         try:
             import requests as req
-            url = (
-                f"https://openapi.naver.com/v1/search/news.json"
-                f"?query={encoded}&display={display}&sort=date"
-            )
             resp = req.get(
-                url,
+                f"https://openapi.naver.com/v1/search/news.json?query={encoded}&display={display}&sort=date",
                 headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csecret},
                 timeout=8,
             )
@@ -168,30 +197,25 @@ def fetch_naver_news(query: str, display: int = 20,
                         "source": "naver", "title": title,
                         "desc": (desc[:150] + "…") if len(desc) > 150 else desc,
                         "link": link, "date": fmt_date(dt),
-                        "dt": dt, "keywords": found, "query": query,
+                        "keywords": found, "query": query,
                     })
                 return results
         except Exception:
             pass
 
-    # ② 네이버 모바일 검색 스크래핑 (fallback)
+    # ② 모바일 스크래핑 fallback
     try:
         import requests as req
         from bs4 import BeautifulSoup
-        url = (
-            f"https://m.search.naver.com/search.naver"
-            f"?where=m_news&query={encoded}&sort=1&nso=so:dd,p:all"
-        )
-        headers = {
-            "User-Agent": (
+        resp = req.get(
+            f"https://m.search.naver.com/search.naver?where=m_news&query={encoded}&sort=1&nso=so:dd,p:all",
+            headers={"User-Agent": (
                 "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-                "Version/16.0 Mobile/15E148 Safari/604.1"
-            )
-        }
-        resp = req.get(url, headers=headers, timeout=10)
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+            )},
+            timeout=10,
+        )
         soup = BeautifulSoup(resp.text, "html.parser")
-
         for item in (soup.select("div.news_wrap") or soup.select("li.bx"))[:display]:
             a_tag = item.select_one("a.news_tit") or item.select_one("a[href]")
             if not a_tag:
@@ -207,33 +231,26 @@ def fetch_naver_news(query: str, display: int = 20,
                 "source": "naver", "title": title,
                 "desc": (desc[:150] + "…") if len(desc) > 150 else desc,
                 "link": link, "date": pub_str,
-                "dt": None, "keywords": found, "query": query,
+                "keywords": found, "query": query,
             })
     except Exception:
         pass
-
     return results
 
-# ── 구글 뉴스 수집 ────────────────────────────────────────────────────────────
-def fetch_google_news(query: str, num: int = 15,
-                      date_from=None, date_to=None) -> list:
+
+def fetch_google_news(query: str, num: int = 15, date_from=None, date_to=None) -> list:
     results = []
     period_param = ""
     if date_from and date_to:
         delta = (date_to - date_from).days
-        if delta <= 1:
-            period_param = "&tbs=qdr:d"
-        elif delta <= 7:
-            period_param = "&tbs=qdr:w"
-        elif delta <= 31:
-            period_param = "&tbs=qdr:m"
+        if delta <= 1:   period_param = "&tbs=qdr:d"
+        elif delta <= 7: period_param = "&tbs=qdr:w"
+        elif delta <= 31:period_param = "&tbs=qdr:m"
 
     encoded = urllib.parse.quote(query)
-    rss_url = (
-        f"https://news.google.com/rss/search"
-        f"?q={encoded}&hl=ko&gl=KR&ceid=KR:ko{period_param}"
+    feed    = feedparser.parse(
+        f"https://news.google.com/rss/search?q={encoded}&hl=ko&gl=KR&ceid=KR:ko{period_param}"
     )
-    feed = feedparser.parse(rss_url)
     for entry in feed.entries[:num]:
         title = clean_html(entry.get("title", ""))
         desc  = clean_html(entry.get("description", entry.get("summary", "")))
@@ -246,11 +263,11 @@ def fetch_google_news(query: str, num: int = 15,
             "source": "google", "title": title,
             "desc": (desc[:150] + "…") if len(desc) > 150 else desc,
             "link": link, "date": fmt_date(dt),
-            "dt": dt, "keywords": found, "query": query,
+            "keywords": found, "query": query,
         })
     return results
 
-# ── 전체 수집 ────────────────────────────────────────────────────────────────
+
 def collect_all_news(companies, extra_kw, per_query, date_from=None, date_to=None):
     all_news = []
     total    = max(len(companies) + len(extra_kw), 1)
@@ -260,13 +277,13 @@ def collect_all_news(companies, extra_kw, per_query, date_from=None, date_to=Non
         q = f"{company} 수주 OR 재개발 OR 재건축 OR 분양"
         all_news += fetch_naver_news(q, per_query, date_from, date_to)
         all_news += fetch_google_news(company, per_query, date_from, date_to)
-        time.sleep(0.25)
+        time.sleep(0.2)
         progress.progress((i + 1) / total, text=f"수집 중: {company}")
 
     for i, kw in enumerate(extra_kw):
         all_news += fetch_naver_news(kw, per_query, date_from, date_to)
         all_news += fetch_google_news(kw, per_query, date_from, date_to)
-        time.sleep(0.25)
+        time.sleep(0.2)
         progress.progress((len(companies) + i + 1) / total, text=f"수집 중: {kw}")
 
     progress.empty()
@@ -279,44 +296,47 @@ def collect_all_news(companies, extra_kw, per_query, date_from=None, date_to=Non
     df = df.sort_values("kw_count", ascending=False).reset_index(drop=True)
     return df
 
+
 # ════════════════════════════════════════════════════════════════════════════
 # 사이드바
 # ════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("### ⚙️ 검색 설정")
 
-    # ── 선정 건설사 ──────────────────────────────────────────────────────────
+    # ── 선정 건설사 (체크박스 방식) ─────────────────────────────────────────
     st.markdown("#### 🏢 선정 건설사")
-    selected_companies = st.multiselect(
-        "건설사를 선택하세요",
-        options=st.session_state.company_pool,
-        default=[c for c in st.session_state.selected_companies
-                 if c in st.session_state.company_pool],
-        key="multiselect_companies",
-    )
-    st.session_state.selected_companies = selected_companies
 
-    if selected_companies:
-        tags_html = "".join(
-            f'<span class="company-tag">{c}</span>' for c in selected_companies
-        )
-        st.markdown(f'<div style="margin:4px 0 8px">{tags_html}</div>', unsafe_allow_html=True)
+    # 체크박스로 각 건설사 표시
+    for company in st.session_state.company_pool:
+        is_checked = company in st.session_state.company_selected
+        checked    = st.checkbox(company, value=is_checked, key=f"chk_{company}")
+        if checked and company not in st.session_state.company_selected:
+            st.session_state.company_selected.append(company)
+            save_companies(st.session_state.company_pool, st.session_state.company_selected)
+        elif not checked and company in st.session_state.company_selected:
+            st.session_state.company_selected.remove(company)
+            save_companies(st.session_state.company_pool, st.session_state.company_selected)
 
-    # 건설사 직접 추가
+    # ── 건설사 직접 추가 ──────────────────────────────────────────────────────
+    st.markdown("---")
     st.markdown("**➕ 건설사 직접 추가**")
-    new_company = st.text_input(
-        "건설사명 입력 후 엔터",
-        placeholder="예: 태영건설",
-        key="new_company_input",
-        label_visibility="collapsed",
-    )
-    if new_company:
-        name = new_company.strip()
-        if name and name not in st.session_state.company_pool:
-            st.session_state.company_pool.append(name)
-        if name and name not in st.session_state.selected_companies:
-            st.session_state.selected_companies.append(name)
-        st.rerun()
+
+    with st.form("add_company_form", clear_on_submit=True):
+        new_company = st.text_input(
+            "건설사명",
+            placeholder="예: 태영건설",
+            label_visibility="collapsed",
+        )
+        submitted = st.form_submit_button("추가하기", use_container_width=True)
+        if submitted and new_company.strip():
+            name = new_company.strip()
+            if name not in st.session_state.company_pool:
+                st.session_state.company_pool.append(name)
+            if name not in st.session_state.company_selected:
+                st.session_state.company_selected.append(name)
+            save_companies(st.session_state.company_pool, st.session_state.company_selected)
+            st.success(f"'{name}' 추가됨!")
+            st.rerun()
 
     st.markdown("---")
 
@@ -351,6 +371,7 @@ with st.sidebar:
     per_query  = st.slider("쿼리당 뉴스 수", 5, 30, 15)
     search_btn = st.button("🔎 뉴스 수집 시작", use_container_width=True, type="primary")
 
+
 # ════════════════════════════════════════════════════════════════════════════
 # 메인
 # ════════════════════════════════════════════════════════════════════════════
@@ -361,25 +382,42 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# 선정된 건설사 태그 표시
+selected = st.session_state.company_selected
+if selected:
+    tags = "".join(
+        f'<span style="display:inline-block;background:#0f3460;color:white;'
+        f'border-radius:20px;padding:4px 13px;font-size:0.78rem;'
+        f'font-weight:500;margin:3px;">{c}</span>'
+        for c in selected
+    )
+    st.markdown(
+        f'<div style="margin-bottom:1rem"><b style="font-size:0.85rem;color:#444">선정 건설사</b><br>'
+        f'<div style="margin-top:5px">{tags}</div></div>',
+        unsafe_allow_html=True,
+    )
+else:
+    st.warning("왼쪽 사이드바에서 건설사를 1개 이상 선택해 주세요.")
+
+# ── 수집 실행 ────────────────────────────────────────────────────────────────
 if search_btn:
-    if not selected_companies and not extra_keywords:
+    if not selected and not extra_keywords:
         st.warning("건설사 또는 키워드를 1개 이상 선택해 주세요.")
     else:
         date_from, date_to = get_date_range(period, custom_start, custom_end)
         with st.spinner("뉴스를 수집하고 있습니다…"):
-            df = collect_all_news(
-                selected_companies, extra_keywords, per_query, date_from, date_to
-            )
-            st.session_state.df = df
+            df = collect_all_news(selected, extra_keywords, per_query, date_from, date_to)
+            st.session_state.df       = df
             st.session_state.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+# ── 결과 표시 ────────────────────────────────────────────────────────────────
 df = st.session_state.df
 
 if df.empty:
     if st.session_state.last_run:
         st.info("선택 조건에 맞는 뉴스가 없습니다. 기간을 늘리거나 키워드를 바꿔보세요.")
     else:
-        st.info("👆 왼쪽 사이드바에서 건설사와 키워드를 설정한 후 **뉴스 수집 시작** 버튼을 눌러주세요.")
+        st.info("👆 사이드바에서 건설사와 키워드를 설정한 후 **뉴스 수집 시작** 버튼을 눌러주세요.")
         st.markdown("""
 #### 이런 뉴스를 찾아드립니다
 - 🏚️ **재개발·재건축** — 정비구역 지정, 시공사 선정, 조합원 모집 등
