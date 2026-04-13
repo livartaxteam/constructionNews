@@ -108,25 +108,90 @@ def parse_and_format_date(date_str: str):
     except Exception:
         return datetime.datetime.now(timezone(timedelta(hours=9))), date_str
 
-def build_query_url(company: str, keyword: str, period: str,
-                    start_date=None, end_date=None) -> str:
-    tbs_map = {"하루": "qdr:d", "일주일": "qdr:w", "한달": "qdr:m"}
-    query   = f"{company} {keyword}"
+def get_cutoff(period: str, start_date=None, end_date=None):
+    """
+    ✅ 수정①: tbs 파라미터에 의존하지 않고 Python에서 직접 날짜 필터링.
+    Google RSS는 tbs=qdr:d 같은 파라미터를 실제로 무시하는 경우가 많음.
+    """
+    kst = timezone(timedelta(hours=9))
+    now = datetime.datetime.now(kst)
+    if period == "하루":
+        return now - timedelta(days=1), now
+    elif period == "일주일":
+        return now - timedelta(days=7), now
+    elif period == "한달":
+        return now - timedelta(days=30), now
+    elif period == "직접입력" and start_date and end_date:
+        dt_start = datetime.datetime.combine(start_date, datetime.time.min).replace(tzinfo=kst)
+        dt_end   = datetime.datetime.combine(end_date,   datetime.time.max).replace(tzinfo=kst)
+        return dt_start, dt_end
+    return None, None  # 전체 기간
 
-    if period == "직접입력" and start_date and end_date:
-        query += f" after:{start_date} before:{end_date}"
-        url = f"https://news.google.com/rss/search?q={urllib.parse.quote(query)}&hl=ko&gl=KR&ceid=KR:ko"
-    else:
-        url = f"https://news.google.com/rss/search?q={urllib.parse.quote(query)}&hl=ko&gl=KR&ceid=KR:ko"
-        if period in tbs_map:
-            url += f"&tbs={tbs_map[period]}"
-    return url
+def build_query_url(company: str, keyword: str) -> str:
+    """기간 파라미터 없이 순수 키워드만 쿼리 (날짜는 Python에서 필터)"""
+    query   = f"{company} {keyword}"
+    encoded = urllib.parse.quote(query)
+    return f"https://news.google.com/rss/search?q={encoded}&hl=ko&gl=KR&ceid=KR:ko"
+
+def extract_nouns(title: str) -> set:
+    """
+    ✅ 수정②: 제목에서 2글자 이상 한글/영문 단어 추출 → 핵심어 집합 반환.
+    유사 기사 판별에 사용.
+    """
+    tokens = re.findall(r'[가-힣]{2,}|[A-Za-z0-9]{2,}', title)
+    # 불용어 제거
+    stopwords = {'기자', '뉴스', '에서', '으로', '하는', '있는', '있다', '했다',
+                 '한다', '이번', '지난', '올해', '최근', '통해', '위해', '대한'}
+    return {t for t in tokens if t not in stopwords}
+
+def is_duplicate(title_a: str, title_b: str, threshold: float = 0.5) -> bool:
+    """
+    두 제목의 핵심어 자카드 유사도가 threshold 이상이면 중복으로 판단.
+    예) '삼성물산 대치쌍용 수주' vs '삼성물산, 대치쌍용1차 재건축 시공사 선정' → 중복
+    """
+    a = extract_nouns(title_a)
+    b = extract_nouns(title_b)
+    if not a or not b:
+        return False
+    intersection = len(a & b)
+    union        = len(a | b)
+    return (intersection / union) >= threshold
+
+def deduplicate_smart(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    ✅ 수정②: 유사도 기반 중복 제거.
+    1단계: 비교키(정확 일치) 기준 제거
+    2단계: 핵심어 자카드 유사도 기준 추가 제거
+    최신 기사를 우선 보존.
+    """
+    # 1단계: 정확 일치 중복 제거
+    df = df.sort_values("정렬시간", ascending=False)
+    df = df.drop_duplicates(subset=["비교키"], keep="first").reset_index(drop=True)
+
+    # 2단계: 유사도 기반 중복 제거
+    keep = []
+    titles_kept = []
+    for idx, row in df.iterrows():
+        title = row["기사 제목"]
+        duplicate = False
+        for kept_title in titles_kept:
+            if is_duplicate(title, kept_title, threshold=0.4):
+                duplicate = True
+                break
+        if not duplicate:
+            keep.append(idx)
+            titles_kept.append(title)
+
+    return df.loc[keep].reset_index(drop=True)
 
 def fetch_one(company: str, keyword: str, period: str,
               max_count: int, start_date=None, end_date=None,
               debug: bool = False):
-    url = build_query_url(company, keyword, period, start_date, end_date)
-    log = {"url": url, "http_status": None, "entries": 0, "error": None}
+    url = build_query_url(company, keyword)
+    log = {"url": url, "http_status": None, "entries": 0, "filtered": 0, "error": None}
+
+    # ✅ 수정①: Python에서 날짜 범위 계산
+    dt_from, dt_to = get_cutoff(period, start_date, end_date)
 
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
@@ -135,7 +200,6 @@ def fetch_one(company: str, keyword: str, period: str,
         if resp.status_code != 200:
             log["error"] = f"HTTP {resp.status_code}"
             return [], log
-
         if not resp.text.strip():
             log["error"] = "빈 응답"
             return [], log
@@ -147,13 +211,23 @@ def fetch_one(company: str, keyword: str, period: str,
             log["error"] = f"파싱 실패(bozo): {feed.bozo_exception}"
             return [], log
 
+        kst = timezone(timedelta(hours=9))
         results = []
-        for entry in feed.entries[:max_count]:
-            pub_raw       = entry.get("published", "")
-            dt_obj, disp  = parse_and_format_date(pub_raw)
-            raw_title     = entry.get("title", "제목 없음")
-            title         = raw_title.rsplit(' - ', 1)[0].strip()
-            compare_key   = re.sub(r'[^가-힣a-zA-Z0-9]', '', title)
+        for entry in feed.entries:
+            pub_raw      = entry.get("published", "")
+            dt_obj, disp = parse_and_format_date(pub_raw)
+
+            # ✅ 수정①: 날짜 범위 Python 필터링
+            if dt_from and dt_to:
+                # dt_obj가 naive이면 KST로 변환
+                dt_check = dt_obj if dt_obj.tzinfo else dt_obj.replace(tzinfo=kst)
+                if not (dt_from <= dt_check <= dt_to):
+                    continue
+
+            raw_title  = entry.get("title", "제목 없음")
+            title      = raw_title.rsplit(' - ', 1)[0].strip()
+            compare_key = re.sub(r'[^가-힣A-Za-z0-9]', '', title)
+
             results.append({
                 "건설사":    company,
                 "키워드":    keyword,
@@ -163,6 +237,10 @@ def fetch_one(company: str, keyword: str, period: str,
                 "비교키":    compare_key,
                 "링크":      entry.get("link", ""),
             })
+            if len(results) >= max_count:
+                break
+
+        log["filtered"] = len(results)
         return results, log
 
     except requests.exceptions.ConnectionError as e:
@@ -222,11 +300,14 @@ if start_crawling:
         # 결과 출력
         if all_news:
             df = pd.DataFrame(all_news)
-            df = df.sort_values("정렬시간", ascending=True)
-            df = df.drop_duplicates(subset=["비교키"], keep="first")
-            df = df.sort_values("정렬시간", ascending=False).reset_index(drop=True)
-
-            st.subheader(f"📊 수집 결과 — 중복 제거 후 총 {len(df)}건")
+            before = len(df)
+            df = deduplicate_smart(df)
+            after   = len(df)
+            removed = before - after
+            period_label = period_option
+            if period_option == "직접입력" and start_date and end_date:
+                period_label = f"{start_date} ~ {end_date}"
+            st.subheader(f"📊 수집 결과 — {period_label} 기준, 중복 제거 후 총 {after}건 (유사 기사 {removed}건 제거)")
 
             tab_labels = ["전체"] + list(df["건설사"].unique())
             tabs       = st.tabs(tab_labels)
