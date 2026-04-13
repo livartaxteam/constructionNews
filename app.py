@@ -9,16 +9,11 @@ import urllib.parse
 import re
 import time
 
-# ✏️ 🗑️ 아이콘 버튼 테두리·배경 제거
+# ✏️ 🗑️ 아이콘 버튼 테두리·배경 제거 + 수집 시작 버튼 붉은 테두리 복원
 st.markdown("""
 <style>
-/* 사이드바 모든 버튼 요소 테두리·배경 완전 제거 */
-section[data-testid="stSidebar"] button,
-section[data-testid="stSidebar"] button:focus,
-section[data-testid="stSidebar"] button:active,
-section[data-testid="stSidebar"] .stButton > button,
-section[data-testid="stSidebar"] .stButton > button:focus,
-section[data-testid="stSidebar"] .stButton > button:hover {
+/* 사이드바 일반 stButton 테두리·배경 완전 제거 (아이콘 버튼용) */
+section[data-testid="stSidebar"] .stButton > button {
     border: none !important;
     border-radius: 0 !important;
     background: transparent !important;
@@ -27,11 +22,13 @@ section[data-testid="stSidebar"] .stButton > button:hover {
     outline: none !important;
     color: #888 !important;
     padding: 0 !important;
+    min-height: unset !important;
 }
 section[data-testid="stSidebar"] .stButton > button:hover {
     color: #222 !important;
+    background: transparent !important;
 }
-/* form 제출 버튼(추가)은 스타일 유지 */
+/* form 제출 버튼(➕ 추가) 테두리 유지 */
 section[data-testid="stSidebar"] .stFormSubmitButton > button {
     border: 1px solid rgba(49,51,63,0.2) !important;
     background-color: transparent !important;
@@ -39,6 +36,28 @@ section[data-testid="stSidebar"] .stFormSubmitButton > button {
     border-radius: 8px !important;
     color: inherit !important;
     padding: 0.4rem 0.8rem !important;
+}
+/* 🚀 뉴스 수집 시작 버튼 — 붉은 테두리·배경 강제 복원 */
+section[data-testid="stSidebar"] div[data-testid="stSidebarNavItems"] ~ div .stButton > button,
+section[data-testid="stSidebar"] .crawl-btn > button {
+    border: none !important;
+}
+div.crawl-btn button,
+div.crawl-btn button:hover,
+div.crawl-btn button:focus,
+div.crawl-btn button:active {
+    background-color: #ff4b4b !important;
+    color: white !important;
+    border: 2px solid #cc0000 !important;
+    border-radius: 8px !important;
+    font-weight: 700 !important;
+    width: 100% !important;
+    padding: 0.5rem 1rem !important;
+    box-shadow: none !important;
+    cursor: pointer !important;
+}
+div.crawl-btn button:hover {
+    background-color: #cc0000 !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -55,7 +74,9 @@ default_companies = [
 if 'companies' not in st.session_state:
     st.session_state.companies = default_companies.copy()
 if 'editing_company' not in st.session_state:
-    st.session_state.editing_company = None  # 현재 편집 중인 건설사명
+    st.session_state.editing_company = None
+if 'all_selected' not in st.session_state:
+    st.session_state.all_selected = False
 
 # ---------------------------------------------------------
 # 2. 사이드바
@@ -64,10 +85,21 @@ st.sidebar.title("🔍 검색 설정")
 st.sidebar.subheader("대상 건설사")
 st.sidebar.caption("✏️ 이름 변경  |  🗑️ 삭제")
 
+# ── 전체 선택/해제 체크박스 ──────────────────────────────
+select_all = st.sidebar.checkbox(
+    "**전체 선택 / 해제**",
+    value=st.session_state.all_selected,
+    key="select_all_chk",
+)
+# 전체 선택 상태 변경 감지 → 각 개별 체크박스 key 초기화용 플래그 저장
+if select_all != st.session_state.all_selected:
+    st.session_state.all_selected = select_all
+    st.rerun()
+
 selected_companies = []
 company_container = st.sidebar.container(height=220)
 with company_container:
-    for comp in list(st.session_state.companies):  # list() 복사로 순회 중 변경 방지
+    for comp in list(st.session_state.companies):
 
         # 편집 모드인 건설사
         if st.session_state.editing_company == comp:
@@ -95,7 +127,13 @@ with company_container:
         else:
             col_chk, col_edit, col_del = st.columns([5, 1, 1])
             with col_chk:
-                if st.checkbox(comp, key=f"chk_{comp}"):
+                # 전체 선택 상태면 value=True 강제
+                checked = st.checkbox(
+                    comp,
+                    value=st.session_state.all_selected,
+                    key=f"chk_{comp}",
+                )
+                if checked:
                     selected_companies.append(comp)
             with col_edit:
                 if st.button("✏️", key=f"edit_{comp}", help=f"'{comp}' 이름 변경"):
@@ -144,7 +182,10 @@ max_news_count = st.sidebar.number_input("건설사별 최대 뉴스 수", min_v
 debug_mode = st.sidebar.checkbox("🔧 디버그 모드 (오류 원인 표시)")
 
 st.sidebar.divider()
-start_crawling = st.sidebar.button("🚀 뉴스 수집 시작", type="primary", use_container_width=True)
+# 🚀 뉴스 수집 시작 — div.crawl-btn 로 감싸서 CSS 타겟팅
+st.sidebar.markdown('<div class="crawl-btn">', unsafe_allow_html=True)
+start_crawling = st.sidebar.button("🚀 뉴스 수집 시작", use_container_width=True)
+st.sidebar.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # 3. 메인 화면
