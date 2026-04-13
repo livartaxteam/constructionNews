@@ -106,6 +106,7 @@ if "action" in _params:
 # 2. 사이드바
 # ---------------------------------------------------------
 st.sidebar.title("🔍 검색 설정")
+start_crawling_top = st.sidebar.button("🚀 뉴스 수집 시작", type="primary", use_container_width=True, key="crawl_top")
 st.sidebar.subheader("대상 건설사")
 st.sidebar.caption("✏️ 이름 변경  |  🗑️ 삭제")
 
@@ -228,7 +229,7 @@ st.sidebar.divider()
 max_news_count = st.sidebar.number_input("건설사별 최대 뉴스 수", min_value=1, max_value=100, value=10)
 debug_mode     = st.sidebar.checkbox("🔧 디버그 모드 (오류 원인 표시)")
 st.sidebar.divider()
-start_crawling = st.sidebar.button("🚀 뉴스 수집 시작", type="primary", use_container_width=True)
+start_crawling_bot = st.sidebar.button("🚀 뉴스 수집 시작", type="primary", use_container_width=True, key="crawl_bot")
 
 # ---------------------------------------------------------
 # 3. 메인 화면
@@ -343,6 +344,7 @@ def fetch_one(company, keyword, period, max_count, s=None, e=None):
 # ---------------------------------------------------------
 # 5. 수집 실행
 # ---------------------------------------------------------
+start_crawling = start_crawling_top or start_crawling_bot
 if start_crawling:
     if not selected_companies:
         st.error("선택된 건설사가 없습니다.")
