@@ -9,6 +9,26 @@ import urllib.parse
 import re
 import time
 
+# ✏️ 🗑️ 아이콘 버튼 테두리·배경 제거
+st.markdown("""
+<style>
+/* 사이드바 내 버튼 중 ✏️ 🗑️ 아이콘만 담은 작은 버튼 → 테두리·배경 제거 */
+div[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button {
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 2px !important;
+    color: #888 !important;
+    font-size: 0.85rem !important;
+    min-height: unset !important;
+}
+div[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button:hover {
+    color: #333 !important;
+    background: transparent !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # ---------------------------------------------------------
 # 1. 초기 데이터 및 세션 상태
 # ---------------------------------------------------------
