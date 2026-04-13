@@ -91,6 +91,7 @@ if "initialized" not in st.session_state:
     st.session_state.saved_keywords  = cfg.get("keywords", DEFAULT_KEYWORDS)
     st.session_state.chk_states      = cfg.get("chk_states", {})
     st.session_state.editing_company = None
+    st.session_state.chk_ver         = 0   # 전체선택 토글 시 key 버전 증가 → 강제 재렌더링
     st.session_state.initialized     = True
 
 def sync_chk():
@@ -111,14 +112,17 @@ st.sidebar.subheader("대상 건설사")
 st.sidebar.caption("✏️ 이름 변경  |  🗑️ 삭제")
 
 # ── 전체 선택 / 해제 ──────────────────────────────────────
-all_checked = bool(st.session_state.companies) and all(
+# 토글 버튼 방식: 누를 때마다 전체선택 ↔ 전체해제 반전
+# chk_ver 를 올려서 개별 체크박스 key를 바꿔 강제 재렌더링
+all_now = bool(st.session_state.companies) and all(
     st.session_state.chk_states.get(c, False) for c in st.session_state.companies
 )
-select_all = st.sidebar.checkbox("**전체 선택 / 해제**", value=all_checked, key="select_all_chk")
-
-if select_all != all_checked:
+btn_label = "☑️ 전체 해제" if all_now else "🔲 전체 선택"
+if st.sidebar.button(btn_label, use_container_width=True, key="select_all_btn"):
+    new_val = not all_now
     for c in st.session_state.companies:
-        st.session_state.chk_states[c] = select_all
+        st.session_state.chk_states[c] = new_val
+    st.session_state.chk_ver = st.session_state.get("chk_ver", 0) + 1
     save_settings()
     st.rerun()
 
@@ -154,11 +158,12 @@ with st.sidebar.container(height=220):
         else:
             col_chk, col_edit, col_del = st.columns([5, 1, 1])
             with col_chk:
-                # ★ value를 chk_states에서 읽어 전체선택과 완전 연동
+                # key에 chk_ver 포함 → 전체선택 토글 시 key가 바뀌어 강제 재렌더링
+                ver = st.session_state.get("chk_ver", 0)
                 checked = st.checkbox(
                     comp,
                     value=st.session_state.chk_states.get(comp, False),
-                    key=f"chk_{comp}",
+                    key=f"chk_{comp}_v{ver}",
                 )
                 if checked != st.session_state.chk_states.get(comp, False):
                     st.session_state.chk_states[comp] = checked
