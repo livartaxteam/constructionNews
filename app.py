@@ -1,388 +1,173 @@
 import streamlit as st
+import datetime
 import feedparser
 import pandas as pd
-import json
-import os
-from datetime import datetime, timedelta, date
 import urllib.parse
-import time
-import re
 
-# ── 페이지 설정 ──────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="건설 수주 · 재개발 뉴스 트래커",
-    page_icon="🏗️",
-    layout="wide",
-    initial_sidebar_state="expanded",
+# ---------------------------------------------------------
+# 1. 초기 데이터 및 세션 상태(Session State) 설정
+# ---------------------------------------------------------
+# 25년 기준 시공능력평가 상위 건설사 예시 (필요시 50개까지 확장 가능)
+default_companies = [
+    "삼성물산", "현대건설", "대우건설", "디엘이앤씨", "지에스건설", 
+    "현대엔지니어링", "포스코이앤씨", "롯데건설", "SK에코플랜트", "호반건설",
+    "HDC현대산업개발", "한화건설", "대방건설", "금호건설", "코오롱글로벌"
+]
+
+if 'companies' not in st.session_state:
+    st.session_state.companies = default_companies
+
+# ---------------------------------------------------------
+# 2. 사이드바 (왼쪽 메뉴바) 구성: 검색 설정
+# ---------------------------------------------------------
+st.sidebar.title("🔍 검색 설정")
+
+# [건설사 선택] - st.container(height=)를 사용하여 스크롤 영역 구현 (약 5개 높이)
+st.sidebar.subheader("대상 건설사")
+st.sidebar.caption("수집할 건설사를 선택하세요 (스크롤 가능)")
+
+# 선택된 건설사를 담을 리스트
+selected_companies = []
+
+# 스크롤 가능한 컨테이너 생성 (Streamlit 1.30.0 이상 필요)
+company_container = st.sidebar.container(height=200)
+with company_container:
+    for comp in st.session_state.companies:
+        # 체크박스 생성
+        if st.checkbox(comp, key=f"chk_{comp}"):
+            selected_companies.append(comp)
+
+# [건설사 추가 기능]
+new_company = st.sidebar.text_input("새로운 건설사 추가", placeholder="건설사명 입력")
+if st.sidebar.button("건설사 추가"):
+    if new_company and new_company not in st.session_state.companies:
+        st.session_state.companies.append(new_company)
+        st.rerun() # 추가 후 화면 새로고침
+
+st.sidebar.divider()
+
+# [키워드 설정]
+st.sidebar.subheader("검색 키워드")
+keywords_input = st.sidebar.text_input(
+    "키워드 (쉼표로 구분하여 입력)",
+    value="재개발, 재건축, 착공, 수주"
+)
+# 쉼표를 기준으로 리스트화하고 공백 제거
+keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
+
+st.sidebar.divider()
+
+# [수집 기간 설정]
+st.sidebar.subheader("수집 기간")
+period_option = st.sidebar.radio(
+    "기간을 선택하세요",
+    ["하루", "일주일", "한달", "직접입력"]
 )
 
-# ── CSS ──────────────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
-html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; }
+# 직접입력을 선택했을 경우 연-월-일 선택창 표시
+start_date, end_date = None, None
+if period_option == "직접입력":
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        start_date = st.date_input("시작일", datetime.date.today() - datetime.timedelta(days=7))
+    with col2:
+        end_date = st.date_input("종료일", datetime.date.today())
 
-.main-header {
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-    padding: 1.6rem 2rem; border-radius: 16px;
-    margin-bottom: 1.2rem; color: white;
-    position: relative; overflow: hidden;
-}
-.main-header::before {
-    content: "🏗️"; position: absolute; right: 2rem; top: 50%;
-    transform: translateY(-50%); font-size: 5rem; opacity: 0.12;
-}
-.main-header h1 { margin: 0; font-size: 1.55rem; font-weight: 700; letter-spacing: -0.5px; }
-.main-header p  { margin: 0.35rem 0 0; opacity: 0.72; font-size: 0.85rem; }
+st.sidebar.divider()
 
-.news-card {
-    background: white; border: 1px solid #e8ecf0;
-    border-radius: 12px; padding: 1.1rem 1.3rem;
-    margin-bottom: 0.8rem; transition: box-shadow .2s, border-color .2s;
-}
-.news-card:hover { box-shadow: 0 4px 18px rgba(0,0,0,.07); border-color: #c0ccd8; }
-.source-badge {
-    display: inline-block; font-size: 0.68rem; font-weight: 700;
-    padding: 2px 8px; border-radius: 20px; margin-bottom: 0.45rem;
-}
-.badge-google { background: #4285f422; color: #4285f4; }
-.news-title { font-size: 0.93rem; font-weight: 600; color: #1a1a2e; margin-bottom: 0.25rem; line-height: 1.45; }
-.news-title a { text-decoration: none; color: inherit; }
-.news-title a:hover { color: #0f3460; text-decoration: underline; }
-.news-meta { font-size: 0.76rem; color: #8a96a3; }
-.kw-tag {
-    display: inline-block; background: #f0f4ff; color: #4a6fa5;
-    border-radius: 5px; padding: 1px 7px;
-    font-size: 0.7rem; font-weight: 500; margin-right: 4px;
-}
-.stat-box {
-    background: #f7f9fc; border: 1px solid #e4e9f0;
-    border-radius: 10px; padding: 0.9rem; text-align: center;
-}
-.stat-box .num   { font-size: 1.7rem; font-weight: 700; color: #0f3460; }
-.stat-box .label { font-size: 0.72rem; color: #6b7a8d; margin-top: 2px; }
-.section-title {
-    font-size: 0.95rem; font-weight: 700; color: #1a1a2e;
-    border-left: 4px solid #0f3460; padding-left: 0.65rem; margin: 1rem 0 0.7rem;
-}
-div[data-testid="stSidebar"] { background: #f7f9fc; }
-.scroll-container {
-    max-height: 150px;
-    overflow-y: auto;
-    border: 1px solid #e6e9ef;
-    border-radius: 5px;
-    padding: 10px;
-    background-color: white;
-    margin-bottom: 10px;
-}
-</style>
-""", unsafe_allow_html=True)
+# [최대 수집 뉴스 갯수]
+st.sidebar.subheader("수집 설정")
+max_news_count = st.sidebar.number_input("건설사별 최대 수집 뉴스 갯수", min_value=1, max_value=100, value=10)
 
-# ── 상수 ────────────────────────────────────────────────────────────────────
-DEFAULT_COMPANIES = [
-    "삼성물산", "현대건설", "대우건설", "GS건설", "포스코이앤씨",
-    "롯데건설", "HDC현대산업개발", "SK에코플랜트", "DL이앤씨", "호반건설",
-]
-KEYWORDS_REDEV   = ["재개발", "재건축", "정비사업", "뉴타운", "도시정비"]
-KEYWORDS_ORDER   = ["수주", "신규공사", "공사계약", "낙찰", "착공", "시공권"]
-KEYWORDS_HOUSING = ["분양", "아파트", "주택사업", "공동주택", "단지"]
+st.sidebar.divider()
 
-SAVE_FILE = "companies.json"
+# [뉴스 수집 시작 버튼] - 메뉴 맨 아래
+start_crawling = st.sidebar.button("🚀 뉴스 수집 시작", type="primary", use_container_width=True)
 
-# ── 건설사 저장/로드 ────────────────────────────────────────────────────────
-def load_companies() -> dict:
-    if os.path.exists(SAVE_FILE):
-        try:
-            with open(SAVE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                for c in DEFAULT_COMPANIES:
-                    if c not in data["pool"]:
-                        data["pool"].append(c)
-                return data
-        except Exception:
-            pass
-    return {
-        "pool": DEFAULT_COMPANIES.copy(),
-        "selected": DEFAULT_COMPANIES[:5].copy(),
-    }
 
-def save_companies(pool: list, selected: list):
-    try:
-        with open(SAVE_FILE, "w", encoding="utf-8") as f:
-            json.dump({"pool": pool, "selected": selected}, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+# ---------------------------------------------------------
+# 3. 메인 화면 구성
+# ---------------------------------------------------------
+st.title("🏗️ 건설 수주-재개발 뉴스 트래커")
+st.markdown("건설사별 신규 수주, 재개발, 재건축, 분양 뉴스를 실시간으로 수집합니다.")
+st.divider()
 
-# ── 세션 상태 초기화 ─────────────────────────────────────────────────────────
-if "initialized" not in st.session_state:
-    data = load_companies()
-    st.session_state.company_pool     = data["pool"]
-    st.session_state.company_selected = data["selected"]
-    st.session_state.df               = pd.DataFrame()
-    st.session_state.last_run         = None
-    st.session_state.initialized      = True
+# 선정 건설사 나열
+st.subheader("📌 선정 건설사")
+if selected_companies:
+    st.info(", ".join(selected_companies))
+else:
+    st.warning("왼쪽 메뉴에서 기사를 수집할 건설사를 1개 이상 선택해주세요.")
 
-# ── 유틸 ────────────────────────────────────────────────────────────────────
-def clean_html(raw: str) -> str:
-    return re.sub(r"<[^>]+>", "", raw or "").strip()
-
-def highlight_keywords(text: str, keywords: list) -> list:
-    return [kw for kw in keywords if kw in text]
-
-def parse_pub_date(entry):
-    pp = entry.get("published_parsed")
-    if pp:
-        try:
-            return datetime(*pp[:6])
-        except Exception:
-            pass
-    return None
-
-def fmt_date(dt) -> str:
-    return dt.strftime("%Y.%m.%d %H:%M") if dt else ""
-
-def get_date_range(period, custom_start=None, custom_end=None):
-    now = datetime.now()
-    if period == "하루":
-        return now - timedelta(days=1), now
-    elif period == "일주일":
-        return now - timedelta(days=7), now
-    elif period == "한달":
-        return now - timedelta(days=30), now
-    elif period == "직접 입력" and custom_start and custom_end:
-        return (
-            datetime.combine(custom_start, datetime.min.time()),
-            datetime.combine(custom_end,   datetime.max.time()),
-        )
-    return None, None
-
-# ── 구글 뉴스 수집 (네이버 제외) ─────────────────────────────────────────────
-def fetch_google_news(query: str, num: int = 15, date_from=None, date_to=None) -> list:
-    results = []
-    period_param = ""
-    if date_from and date_to:
-        delta = (date_to - date_from).days
-        if delta <= 1:   period_param = "&tbs=qdr:d"
-        elif delta <= 7: period_param = "&tbs=qdr:w"
-        elif delta <= 31:period_param = "&tbs=qdr:m"
-
-    encoded = urllib.parse.quote(query)
-    feed    = feedparser.parse(
-        f"https://news.google.com/rss/search?q={encoded}&hl=ko&gl=KR&ceid=KR:ko{period_param}"
-    )
-    for entry in feed.entries[:num]:
-        title = clean_html(entry.get("title", ""))
-        desc  = clean_html(entry.get("description", entry.get("summary", "")))
-        link  = entry.get("link", "")
-        dt    = parse_pub_date(entry)
-        if date_from and date_to and dt and not (date_from <= dt <= date_to):
-            continue
-        found = highlight_keywords(title + desc, KEYWORDS_REDEV + KEYWORDS_ORDER + KEYWORDS_HOUSING)
-        results.append({
-            "source": "google", "title": title,
-            "desc": (desc[:150] + "…") if len(desc) > 150 else desc,
-            "link": link, "date": fmt_date(dt),
-            "keywords": found, "query": query,
-        })
-    return results
-
-def collect_all_news(companies, extra_kw, per_company_news, date_from=None, date_to=None):
-    all_news = []
-    total    = max(len(companies) + len(extra_kw), 1)
-    progress = st.progress(0, text="뉴스 수집 중…")
-
-    for i, company in enumerate(companies):
-        q = f"{company} 수주 OR 재개발 OR 재건축 OR 분양"
-        # 구글 뉴스만 수집
-        all_news += fetch_google_news(q, per_company_news, date_from, date_to)
-        time.sleep(0.2)
-        progress.progress((i + 1) / total, text=f"수집 중: {company}")
-
-    for i, kw in enumerate(extra_kw):
-        all_news += fetch_google_news(kw, per_company_news, date_from, date_to)
-        time.sleep(0.2)
-        progress.progress((len(companies) + i + 1) / total, text=f"수집 중: {kw}")
-
-    progress.empty()
-    if not all_news:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(all_news)
-    df = df.drop_duplicates(subset=["title"])
-    df["kw_count"] = df["keywords"].apply(len)
-    df = df.sort_values("kw_count", ascending=False).reset_index(drop=True)
-    return df
-
-# ════════════════════════════════════════════════════════════════════════════
-# 사이드바
-# ════════════════════════════════════════════════════════════════════════════
-with st.sidebar:
-    st.markdown("### ⚙️ 검색 설정")
-
-    # ── 선정 건설사 (스크롤 가능한 옵션 박스) ─────────────────────────
-    st.markdown("#### 🏢 선정 건설사")
-    
-    st.markdown('<div class="scroll-container">', unsafe_allow_html=True)
-    for company in st.session_state.company_pool:
-        is_checked = company in st.session_state.company_selected
-        checked = st.checkbox(company, value=is_checked, key=f"sidebar_chk_{company}")
+# ---------------------------------------------------------
+# 4. 구글 뉴스 수집 로직 작동 (버튼 클릭 시)
+# ---------------------------------------------------------
+if start_crawling:
+    if not selected_companies:
+        st.error("선택된 건설사가 없습니다. 검색을 중단합니다.")
+    elif not keywords:
+        st.error("입력된 키워드가 없습니다.")
+    else:
+        st.success("데이터 수집을 시작합니다. 잠시만 기다려주세요...")
         
-        if checked and company not in st.session_state.company_selected:
-            st.session_state.company_selected.append(company)
-            save_companies(st.session_state.company_pool, st.session_state.company_selected)
-        elif not checked and company in st.session_state.company_selected:
-            st.session_state.company_selected.remove(company)
-            save_companies(st.session_state.company_pool, st.session_state.company_selected)
-    st.markdown('</div>', unsafe_allow_html=True)
+        all_news_data = []
 
-    # ── 건설사 직접 추가 ──────────────────────────────────────────────────────
-    with st.form("add_company_form", clear_on_submit=True):
-        new_company = st.text_input("➕ 건설사 추가", placeholder="예: 쌍용건설")
-        if st.form_submit_button("추가", use_container_width=True):
-            if new_company.strip():
-                name = new_company.strip()
-                if name not in st.session_state.company_pool:
-                    st.session_state.company_pool.append(name)
-                if name not in st.session_state.company_selected:
-                    st.session_state.company_selected.append(name)
-                save_companies(st.session_state.company_pool, st.session_state.company_selected)
-                st.rerun()
+        # 기간에 따른 구글 뉴스 검색 쿼리(문법) 설정
+        time_query = ""
+        if period_option == "하루":
+            time_query = " when:1d"
+        elif period_option == "일주일":
+            time_query = " when:7d"
+        elif period_option == "한달":
+            time_query = " when:1m"
+        elif period_option == "직접입력":
+            time_query = f" after:{start_date} before:{end_date}"
 
-    st.markdown("---")
+        # 진행 상태바 표시
+        progress_bar = st.progress(0)
+        total_steps = len(selected_companies) * len(keywords)
+        current_step = 0
 
-    # ── 추가 키워드 ──────────────────────────────────────────────────────────
-    st.markdown("#### 🔍 추가 키워드")
-    extra_kw_input = st.text_input("쉼표(,)로 구분", value="재개발 수주, 재건축 착공", placeholder="예: 재개발 수주, 낙찰")
-    extra_keywords = [k.strip() for k in extra_kw_input.split(",") if k.strip()]
+        # 건설사 + 키워드 조합으로 검색
+        for company in selected_companies:
+            for keyword in keywords:
+                # 구글 뉴스 검색어 조합 (예: "삼성물산" "재건축" when:1d)
+                search_query = f'"{company}" "{keyword}"{time_query}'
+                encoded_query = urllib.parse.quote(search_query)
+                rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ko&gl=KR&ceid=KR:ko"
+                
+                # RSS 피드 파싱
+                feed = feedparser.parse(rss_url)
+                
+                # 최대 갯수 제한에 맞춰 데이터 수집
+                for entry in feed.entries[:max_news_count]:
+                    all_news_data.append({
+                        "건설사": company,
+                        "키워드": keyword,
+                        "기사 제목": entry.title,
+                        "게시일": entry.published,
+                        "링크": entry.link
+                    })
+                
+                current_step += 1
+                progress_bar.progress(current_step / total_steps)
 
-    st.markdown("---")
-
-    # ── 수집 기간 ────────────────────────────────────────────────────────────
-    st.markdown("#### 📅 수집 기간")
-    period = st.radio(
-        "기간 선택",
-        ["하루", "일주일", "한달", "직접 입력"],
-        index=1,
-        label_visibility="collapsed"
-    )
-    custom_start = custom_end = None
-    if period == "직접 입력":
-        col_s, col_e = st.columns(2)
-        with col_s: custom_start = st.date_input("시작", value=date.today() - timedelta(days=7))
-        with col_e: custom_end = st.date_input("종료", value=date.today())
-
-    st.markdown("---")
-    
-    # ── 건설사별 뉴스 수 (수정됨) ──────────────────────────────────────────────
-    per_company_news = st.slider("건설사별 뉴스 수", 5, 30, 15)
-    st.info(f"💡 건설사 1곳 당 최대 {per_company_news}개의 기사를 수집합니다.")
-    
-    search_btn = st.button("🔎 뉴스 수집 시작", use_container_width=True, type="primary")
-
-# ════════════════════════════════════════════════════════════════════════════
-# 메인 화면
-# ════════════════════════════════════════════════════════════════════════════
-st.markdown("""
-<div class="main-header">
-  <h1>🏗️ 건설 수주 · 재개발 뉴스 트래커</h1>
-  <p>건설사별 신규 수주 · 재개발 · 재건축 · 분양 뉴스를 실시간으로 수집합니다 (Google News)</p>
-</div>
-""", unsafe_allow_html=True)
-
-selected = st.session_state.company_selected
-if selected:
-    tags = "".join(
-        f'<span style="display:inline-block;background:#0f3460;color:white;'
-        f'border-radius:20px;padding:4px 13px;font-size:0.78rem;'
-        f'font-weight:500;margin:3px;">{c}</span>'
-        for c in selected
-    )
-    st.markdown(
-        f'<div style="margin-bottom:1rem"><b style="font-size:0.85rem;color:#444">선정 건설사</b><br>'
-        f'<div style="margin-top:5px">{tags}</div></div>',
-        unsafe_allow_html=True,
-    )
-else:
-    st.warning("👈 왼쪽 사이드바에서 건설사를 1개 이상 선택해 주세요.")
-
-if search_btn:
-    if not selected and not extra_keywords:
-        st.warning("건설사 또는 키워드를 1개 이상 선택해 주세요.")
-    else:
-        date_from, date_to = get_date_range(period, custom_start, custom_end)
-        with st.spinner("뉴스를 수집하고 있습니다…"):
-            df = collect_all_news(selected, extra_keywords, per_company_news, date_from, date_to)
-            st.session_state.df       = df
-            st.session_state.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-df = st.session_state.df
-
-if df.empty:
-    if st.session_state.last_run:
-        st.info("선택 조건에 맞는 뉴스가 없습니다. 기간을 늘리거나 키워드를 바꿔보세요.")
-    else:
-        st.info("👆 사이드바에서 설정을 마친 후 **뉴스 수집 시작** 버튼을 눌러주세요.")
-else:
-    redev_df   = df[df["keywords"].apply(lambda x: any(k in x for k in KEYWORDS_REDEV))]
-    order_df   = df[df["keywords"].apply(lambda x: any(k in x for k in KEYWORDS_ORDER))]
-    housing_df = df[df["keywords"].apply(lambda x: any(k in x for k in KEYWORDS_HOUSING))]
-
-    c1, c2, c3, c4 = st.columns(4)
-    for col, num, label in [
-        (c1, len(df),         "총 수집 뉴스"),
-        (c2, len(redev_df),   "🏚️ 재개발·재건축"),
-        (c3, len(order_df),   "📋 신규 수주"),
-        (c4, len(housing_df), "🏠 분양·주택사업"),
-    ]:
-        with col:
-            st.markdown(
-                f'<div class="stat-box"><div class="num">{num}</div>'
-                f'<div class="label">{label}</div></div>',
-                unsafe_allow_html=True,
+        # 결과 출력
+        st.divider()
+        st.subheader(f"📊 수집 결과 (총 {len(all_news_data)}건)")
+        
+        if all_news_data:
+            # 판다스 데이터프레임으로 변환하여 표 형태로 예쁘게 출력
+            df = pd.DataFrame(all_news_data)
+            
+            # 링크를 클릭 가능한 형태로 만들기 위한 Streamlit 설정
+            st.dataframe(
+                df,
+                column_config={
+                    "링크": st.column_config.LinkColumn("기사 링크 (클릭)")
+                },
+                use_container_width=True,
+                hide_index=True
             )
-
-    if st.session_state.last_run:
-        st.caption(f"🕐 마지막 수집: {st.session_state.last_run}  |  조회 기간: {period}")
-
-    st.markdown("---")
-
-    def render_news(dataframe: pd.DataFrame):
-        if dataframe.empty:
-            st.info("해당 카테고리의 뉴스가 없습니다.")
-            return
-        for _, row in dataframe.iterrows():
-            badge_cls = "badge-google"
-            badge_lbl = "Google 뉴스"
-            kw_tags   = "".join(
-                f'<span class="kw-tag">{k}</span>' for k in row["keywords"]
-            ) if row["keywords"] else ""
-            date_str  = f" · {row['date']}" if row["date"] else ""
-            query_str = f" · 검색어: {row['query']}" if row.get("query") else ""
-            st.markdown(f"""
-<div class="news-card">
-  <span class="source-badge {badge_cls}">{badge_lbl}</span>
-  <div class="news-title"><a href="{row['link']}" target="_blank">{row['title']}</a></div>
-  <div class="news-meta">{date_str}{query_str}</div>
-  {f'<div style="margin-top:0.45rem">{kw_tags}</div>' if kw_tags else ''}
-</div>
-""", unsafe_allow_html=True)
-
-    tab1, tab2, tab3, tab4 = st.tabs([
-        f"전체 ({len(df)})",
-        f"🏚️ 재개발·재건축 ({len(redev_df)})",
-        f"📋 신규 수주 ({len(order_df)})",
-        f"🏠 분양·주택 ({len(housing_df)})",
-    ])
-    with tab1: render_news(df)
-    with tab2: render_news(redev_df)
-    with tab3: render_news(order_df)
-    with tab4: render_news(housing_df)
-
-    st.markdown("---")
-    csv = df[["source", "title", "date", "query", "link"]].to_csv(index=False, encoding="utf-8-sig")
-    st.download_button(
-        "📥 CSV로 다운로드",
-        data=csv,
-        file_name=f"construction_news_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv",
-    )
+        else:
+            st.info("해당 조건에 맞는 뉴스가 없습니다.")
