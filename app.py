@@ -20,26 +20,65 @@ default_companies = [
 
 if 'companies' not in st.session_state:
     st.session_state.companies = default_companies.copy()
+if 'editing_company' not in st.session_state:
+    st.session_state.editing_company = None  # 현재 편집 중인 건설사명
 
 # ---------------------------------------------------------
 # 2. 사이드바
 # ---------------------------------------------------------
 st.sidebar.title("🔍 검색 설정")
 st.sidebar.subheader("대상 건설사")
-st.sidebar.caption("수집할 건설사를 선택하세요 (스크롤 가능)")
+st.sidebar.caption("✏️ 이름 변경  |  🗑️ 삭제")
 
 selected_companies = []
-company_container = st.sidebar.container(height=200)
+company_container = st.sidebar.container(height=220)
 with company_container:
-    for comp in st.session_state.companies:
-        if st.checkbox(comp, key=f"chk_{comp}"):
-            selected_companies.append(comp)
+    for comp in list(st.session_state.companies):  # list() 복사로 순회 중 변경 방지
 
+        # 편집 모드인 건설사
+        if st.session_state.editing_company == comp:
+            new_name = st.text_input(
+                "변경할 이름",
+                value=comp,
+                key=f"edit_input_{comp}",
+                label_visibility="collapsed",
+            )
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                if st.button("저장", key=f"save_{comp}", use_container_width=True):
+                    new_name = new_name.strip()
+                    if new_name and new_name != comp:
+                        idx = st.session_state.companies.index(comp)
+                        st.session_state.companies[idx] = new_name
+                    st.session_state.editing_company = None
+                    st.rerun()
+            with c2:
+                if st.button("취소", key=f"cancel_{comp}", use_container_width=True):
+                    st.session_state.editing_company = None
+                    st.rerun()
+
+        # 일반 모드
+        else:
+            col_chk, col_edit, col_del = st.columns([5, 1, 1])
+            with col_chk:
+                if st.checkbox(comp, key=f"chk_{comp}"):
+                    selected_companies.append(comp)
+            with col_edit:
+                if st.button("✏️", key=f"edit_{comp}", help=f"'{comp}' 이름 변경"):
+                    st.session_state.editing_company = comp
+                    st.rerun()
+            with col_del:
+                if st.button("🗑️", key=f"del_{comp}", help=f"'{comp}' 삭제"):
+                    st.session_state.companies.remove(comp)
+                    st.session_state.editing_company = None
+                    st.rerun()
+
+# 건설사 추가 폼
 with st.sidebar.form("add_form", clear_on_submit=True):
     new_company = st.text_input("새 건설사 추가", placeholder="건설사명 입력")
-    if st.form_submit_button("추가"):
-        if new_company and new_company not in st.session_state.companies:
-            st.session_state.companies.append(new_company)
+    if st.form_submit_button("➕ 추가", use_container_width=True):
+        if new_company and new_company.strip() not in st.session_state.companies:
+            st.session_state.companies.append(new_company.strip())
             st.rerun()
 
 st.sidebar.divider()
