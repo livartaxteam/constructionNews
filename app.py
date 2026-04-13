@@ -17,7 +17,7 @@ import os
 SAVE_FILE = "settings.json"
 
 DEFAULT_COMPANIES = [
-    "삼성물산", "현대건설", "대우건설", "디엘이앤씨", "지에스건설",
+    "삼성물산", "현대건설", "대우건설", "GS건설",
     "현대엔지니어링", "포스코이앤씨", "롯데건설", "SK에코플랜트", "호반건설",
     "HDC현대산업개발", "한화건설", "대방건설", "금호건설", "코오롱글로벌"
 ]
@@ -28,9 +28,7 @@ def load_settings():
         try:
             with open(SAVE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            for c in DEFAULT_COMPANIES:
-                if c not in data.get("companies", []):
-                    data.setdefault("companies", []).append(c)
+            # 저장된 목록을 그대로 사용 (DEFAULT 자동 보충 없음)
             return data
         except Exception:
             pass
