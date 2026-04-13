@@ -9,55 +9,51 @@ import urllib.parse
 import re
 import time
 
-# ✏️ 🗑️ 아이콘 버튼 테두리·배경 제거 + 수집 시작 버튼 붉은 테두리 복원
+# CSS
 st.markdown("""
 <style>
-/* 사이드바 일반 stButton 테두리·배경 완전 제거 (아이콘 버튼용) */
-section[data-testid="stSidebar"] .stButton > button {
+/* ── 아이콘 버튼(✏️ 🗑️)만 타겟: key에 edit_ / del_ 포함된 버튼 ── */
+/* Streamlit은 button에 data-testid="baseButton-secondary" 를 붙임.
+   key값이 aria-label에 들어가므로 속성 선택자로 정확히 잡음 */
+section[data-testid="stSidebar"] button[aria-label^="edit_"],
+section[data-testid="stSidebar"] button[aria-label^="del_"],
+section[data-testid="stSidebar"] button[aria-label^="save_"],
+section[data-testid="stSidebar"] button[aria-label^="cancel_"] {
     border: none !important;
-    border-radius: 0 !important;
     background: transparent !important;
     background-color: transparent !important;
     box-shadow: none !important;
     outline: none !important;
-    color: #888 !important;
-    padding: 0 !important;
+    color: #aaa !important;
+    padding: 0 2px !important;
     min-height: unset !important;
+    line-height: 1 !important;
+    border-radius: 0 !important;
 }
-section[data-testid="stSidebar"] .stButton > button:hover {
-    color: #222 !important;
+section[data-testid="stSidebar"] button[aria-label^="edit_"]:hover,
+section[data-testid="stSidebar"] button[aria-label^="del_"]:hover {
+    color: #333 !important;
     background: transparent !important;
 }
-/* form 제출 버튼(➕ 추가) 테두리 유지 */
-section[data-testid="stSidebar"] .stFormSubmitButton > button {
-    border: 1px solid rgba(49,51,63,0.2) !important;
-    background-color: transparent !important;
-    box-shadow: none !important;
-    border-radius: 8px !important;
-    color: inherit !important;
-    padding: 0.4rem 0.8rem !important;
-}
-/* 🚀 뉴스 수집 시작 버튼 — 붉은 테두리·배경 강제 복원 */
-section[data-testid="stSidebar"] div[data-testid="stSidebarNavItems"] ~ div .stButton > button,
-section[data-testid="stSidebar"] .crawl-btn > button {
-    border: none !important;
-}
-div.crawl-btn button,
-div.crawl-btn button:hover,
-div.crawl-btn button:focus,
-div.crawl-btn button:active {
-    background-color: #ff4b4b !important;
+
+/* ── 뉴스 수집 시작 버튼 ── */
+section[data-testid="stSidebar"] button[aria-label="🚀 뉴스 수집 시작"],
+section[data-testid="stSidebar"] button[kind="primaryFormSubmit"],
+section[data-testid="stSidebar"] [data-testid="baseButton-primary"] {
+    background-color: #e53935 !important;
     color: white !important;
-    border: 2px solid #cc0000 !important;
+    border: 2px solid #b71c1c !important;
     border-radius: 8px !important;
     font-weight: 700 !important;
     width: 100% !important;
-    padding: 0.5rem 1rem !important;
-    box-shadow: none !important;
+    padding: 0.55rem 1rem !important;
+    box-shadow: 0 2px 6px rgba(229,57,53,0.35) !important;
     cursor: pointer !important;
 }
-div.crawl-btn button:hover {
-    background-color: #cc0000 !important;
+section[data-testid="stSidebar"] button[aria-label="🚀 뉴스 수집 시작"]:hover,
+section[data-testid="stSidebar"] [data-testid="baseButton-primary"]:hover {
+    background-color: #b71c1c !important;
+    box-shadow: 0 3px 10px rgba(183,28,28,0.4) !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -182,10 +178,8 @@ max_news_count = st.sidebar.number_input("건설사별 최대 뉴스 수", min_v
 debug_mode = st.sidebar.checkbox("🔧 디버그 모드 (오류 원인 표시)")
 
 st.sidebar.divider()
-# 🚀 뉴스 수집 시작 — div.crawl-btn 로 감싸서 CSS 타겟팅
-st.sidebar.markdown('<div class="crawl-btn">', unsafe_allow_html=True)
-start_crawling = st.sidebar.button("🚀 뉴스 수집 시작", use_container_width=True)
-st.sidebar.markdown('</div>', unsafe_allow_html=True)
+# 🚀 뉴스 수집 시작
+start_crawling = st.sidebar.button("🚀 뉴스 수집 시작", type="primary", use_container_width=True)
 
 # ---------------------------------------------------------
 # 3. 메인 화면
