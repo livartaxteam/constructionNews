@@ -6,6 +6,7 @@ import feedparser
 import pandas as pd
 import urllib.parse
 import re
+import concurrent.futures
 
 # ---------------------------------------------------------
 # 1. 초기 데이터 및 세션 상태(Session State) 설정
@@ -43,9 +44,12 @@ if st.sidebar.button("건설사 추가"):
 st.sidebar.divider()
 
 st.sidebar.subheader("검색 키워드")
-keywords_input = st.sidebar.text_input(
+# 요청하신 새로운 기본 키워드로 변경
+default_keywords = "재건축 수주, 정비사업 시공사 선정, 아파트 분양 예정, 재개발 사업, 프리미엄 주거 단지, 하이엔드 주거 프로젝트"
+keywords_input = st.sidebar.text_area(
     "키워드 (쉼표로 구분하여 입력)",
-    value="재개발, 재건축, 착공, 수주"
+    value=default_keywords,
+    height=100
 )
 keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
 
@@ -86,29 +90,47 @@ else:
     st.warning("왼쪽 메뉴에서 기사를 수집할 건설사를 1개 이상 선택해주세요.")
 
 # ---------------------------------------------------------
-# 4. 날짜 파싱 및 변환 함수 (KST 적용 및 포맷팅)
+# 4. 날짜 파싱 및 수집 워커(Worker) 함수 설정
 # ---------------------------------------------------------
 def parse_and_format_date(date_str):
     try:
-        # 구글 뉴스의 영문 날짜를 datetime 객체로 변환
         dt = parsedate_to_datetime(date_str)
-        # 한국 시간(KST)으로 맞춤
         kst_tz = timezone(timedelta(hours=9))
         dt_kst = dt.astimezone(kst_tz)
-        
-        # YY.MM.DD 형식 추출
         formatted_date = dt_kst.strftime('%y.%m.%d')
-        # 요일 추출
         weekdays = ['월', '화', '수', '목', '금', '토', '일']
         weekday = weekdays[dt_kst.weekday()]
-        
-        # 정렬용 원본 시간과, 화면 표시용 문자열 반환
         return dt_kst, f"{formatted_date} ({weekday})"
     except Exception:
         return datetime.datetime.now(), date_str
 
+# 개별 건설사 뉴스를 수집하는 함수 (멀티스레딩용)
+def fetch_company_news(company, keywords_list, time_query, max_count):
+    # 💡 핵심 속도 개선 1: 여러 키워드를 "A" OR "B" OR "C" 형태로 묶어 한 번에 검색
+    keywords_query = " OR ".join([f'"{k}"' for k in keywords_list])
+    search_query = f'"{company}" ({keywords_query}){time_query}'
+    
+    encoded_query = urllib.parse.quote(search_query)
+    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ko&gl=KR&ceid=KR:ko"
+    
+    feed = feedparser.parse(rss_url)
+    company_news = []
+    
+    for entry in feed.entries[:max_count]:
+        dt_obj, display_date = parse_and_format_date(entry.published)
+        cleaned_title = entry.title.rsplit(' - ', 1)[0].strip()
+        compare_key = re.sub(r'[^가-힣a-zA-Z0-9]', '', cleaned_title)
+
+        company_news.append({
+            "기사 제목": cleaned_title,
+            "게시일": display_date,
+            "정렬시간": dt_obj,
+            "비교키": compare_key,
+        })
+    return company_news
+
 # ---------------------------------------------------------
-# 5. 구글 뉴스 수집 및 처리 로직
+# 5. 구글 뉴스 병렬 수집 실행 로직
 # ---------------------------------------------------------
 if start_crawling:
     if not selected_companies:
@@ -116,11 +138,9 @@ if start_crawling:
     elif not keywords:
         st.error("입력된 키워드가 없습니다.")
     else:
-        st.success("데이터 수집을 시작합니다. 잠시만 기다려주세요...")
+        st.success("⚡ 초고속 데이터 수집을 시작합니다. 잠시만 기다려주세요...")
         
-        all_news_data = []
         time_query = ""
-        
         if period_option == "하루":
             time_query = " when:1d"
         elif period_option == "일주일":
@@ -130,53 +150,46 @@ if start_crawling:
         elif period_option == "직접입력":
             time_query = f" after:{start_date} before:{end_date}"
 
+        all_news_data = []
         progress_bar = st.progress(0)
-        total_steps = len(selected_companies) * len(keywords)
+        total_steps = len(selected_companies)
         current_step = 0
 
-        for company in selected_companies:
-            for keyword in keywords:
-                search_query = f'"{company}" "{keyword}"{time_query}'
-                encoded_query = urllib.parse.quote(search_query)
-                rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ko&gl=KR&ceid=KR:ko"
+        # 💡 핵심 속도 개선 2: 멀티스레딩(병렬 처리)으로 여러 건설사를 동시에 검색
+        # 최대 10개의 스레드를 띄워서 동시 작업 진행 (건설사가 50개여도 순식간에 처리됨)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            # 작업 예약
+            future_to_company = {
+                executor.submit(fetch_company_news, company, keywords, time_query, max_news_count): company
+                for company in selected_companies
+            }
+            
+            # 작업이 완료되는 대로 결과 취합
+            for future in concurrent.futures.as_completed(future_to_company):
+                try:
+                    data = future.result()
+                    all_news_data.extend(data)
+                except Exception as e:
+                    pass # 오류 발생 시 무시하고 진행
                 
-                feed = feedparser.parse(rss_url)
-                
-                for entry in feed.entries[:max_news_count]:
-                    # 날짜 변환 함수 호출
-                    dt_obj, display_date = parse_and_format_date(entry.published)
-                    
-                    # 1. 중복 검사를 위한 제목 정제: "제목 - 언론사명" 에서 언론사명 제거
-                    cleaned_title = entry.title.rsplit(' - ', 1)[0].strip()
-                    # 2. 띄어쓰기 및 특수문자까지 모두 제거하여 엄격한 '비교용 키' 생성
-                    compare_key = re.sub(r'[^가-힣a-zA-Z0-9]', '', cleaned_title)
-
-                    all_news_data.append({
-                        "기사 제목": cleaned_title, # 언론사가 제거된 깔끔한 제목
-                        "게시일": display_date,    # YY.MM.DD (요일) 포맷
-                        "정렬시간": dt_obj,         # 시간순 정렬을 위한 실제 datetime 데이터
-                        "비교키": compare_key,       # 중복 제거 전용 키
-                    })
-                
+                # 프로그레스 바 업데이트 (건설사 단위)
                 current_step += 1
                 progress_bar.progress(current_step / total_steps)
 
         st.divider()
         
+        # ---------------------------------------------------------
+        # 6. 결과 출력 (중복 제거 및 최신순 정렬)
+        # ---------------------------------------------------------
         if all_news_data:
             df = pd.DataFrame(all_news_data)
             
-            # --- 중복 제거 및 최초 보도 기사 추출 로직 ---
-            # 1. 먼저 보도된 순(오래된 시간순)으로 정렬
             df = df.sort_values(by='정렬시간', ascending=True)
-            # 2. 내용이 같은 기사(비교키 동일) 중 첫 번째(최초 보도) 기사만 남기고 제거
             df = df.drop_duplicates(subset=['비교키'], keep='first')
-            # 3. 보기 편하게 다시 최신 기사(가장 최근 시간)가 위로 오도록 내림차순 정렬
             df = df.sort_values(by='정렬시간', ascending=False)
             
             st.subheader(f"📊 수집 결과 (중복 제거 후 총 {len(df)}건)")
             
-            # 화면에 보여줄 컬럼만 추출
             df_display = df[['기사 제목', '게시일']]
             
             st.dataframe(
