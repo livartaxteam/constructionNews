@@ -1,8 +1,11 @@
 import streamlit as st
 import datetime
+from datetime import timezone, timedelta
+from email.utils import parsedate_to_datetime
 import feedparser
 import pandas as pd
 import urllib.parse
+import re
 
 # ---------------------------------------------------------
 # 1. 초기 데이터 및 세션 상태(Session State) 설정
@@ -25,15 +28,12 @@ st.sidebar.subheader("대상 건설사")
 st.sidebar.caption("수집할 건설사를 선택하세요 (스크롤 가능)")
 
 selected_companies = []
-
-# 스크롤 가능한 컨테이너 생성
 company_container = st.sidebar.container(height=200)
 with company_container:
     for comp in st.session_state.companies:
         if st.checkbox(comp, key=f"chk_{comp}"):
             selected_companies.append(comp)
 
-# 건설사 추가 기능
 new_company = st.sidebar.text_input("새로운 건설사 추가", placeholder="건설사명 입력")
 if st.sidebar.button("건설사 추가"):
     if new_company and new_company not in st.session_state.companies:
@@ -42,7 +42,6 @@ if st.sidebar.button("건설사 추가"):
 
 st.sidebar.divider()
 
-# 키워드 설정
 st.sidebar.subheader("검색 키워드")
 keywords_input = st.sidebar.text_input(
     "키워드 (쉼표로 구분하여 입력)",
@@ -52,7 +51,6 @@ keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
 
 st.sidebar.divider()
 
-# 수집 기간 설정
 st.sidebar.subheader("수집 기간")
 period_option = st.sidebar.radio(
     "기간을 선택하세요",
@@ -69,15 +67,10 @@ if period_option == "직접입력":
 
 st.sidebar.divider()
 
-# 최대 수집 뉴스 갯수
-st.sidebar.subheader("수집 설정")
 max_news_count = st.sidebar.number_input("건설사별 최대 수집 뉴스 갯수", min_value=1, max_value=100, value=10)
 
 st.sidebar.divider()
-
-# 뉴스 수집 시작 버튼
 start_crawling = st.sidebar.button("🚀 뉴스 수집 시작", type="primary", use_container_width=True)
-
 
 # ---------------------------------------------------------
 # 3. 메인 화면 구성
@@ -93,7 +86,29 @@ else:
     st.warning("왼쪽 메뉴에서 기사를 수집할 건설사를 1개 이상 선택해주세요.")
 
 # ---------------------------------------------------------
-# 4. 구글 뉴스 수집 로직 작동 (버튼 클릭 시)
+# 4. 날짜 파싱 및 변환 함수 (KST 적용 및 포맷팅)
+# ---------------------------------------------------------
+def parse_and_format_date(date_str):
+    try:
+        # 구글 뉴스의 영문 날짜를 datetime 객체로 변환
+        dt = parsedate_to_datetime(date_str)
+        # 한국 시간(KST)으로 맞춤
+        kst_tz = timezone(timedelta(hours=9))
+        dt_kst = dt.astimezone(kst_tz)
+        
+        # YY.MM.DD 형식 추출
+        formatted_date = dt_kst.strftime('%y.%m.%d')
+        # 요일 추출
+        weekdays = ['월', '화', '수', '목', '금', '토', '일']
+        weekday = weekdays[dt_kst.weekday()]
+        
+        # 정렬용 원본 시간과, 화면 표시용 문자열 반환
+        return dt_kst, f"{formatted_date} ({weekday})"
+    except Exception:
+        return datetime.datetime.now(), date_str
+
+# ---------------------------------------------------------
+# 5. 구글 뉴스 수집 및 처리 로직
 # ---------------------------------------------------------
 if start_crawling:
     if not selected_companies:
@@ -104,8 +119,8 @@ if start_crawling:
         st.success("데이터 수집을 시작합니다. 잠시만 기다려주세요...")
         
         all_news_data = []
-
         time_query = ""
+        
         if period_option == "하루":
             time_query = " when:1d"
         elif period_option == "일주일":
@@ -128,33 +143,42 @@ if start_crawling:
                 feed = feedparser.parse(rss_url)
                 
                 for entry in feed.entries[:max_news_count]:
+                    # 날짜 변환 함수 호출
+                    dt_obj, display_date = parse_and_format_date(entry.published)
+                    
+                    # 1. 중복 검사를 위한 제목 정제: "제목 - 언론사명" 에서 언론사명 제거
+                    cleaned_title = entry.title.rsplit(' - ', 1)[0].strip()
+                    # 2. 띄어쓰기 및 특수문자까지 모두 제거하여 엄격한 '비교용 키' 생성
+                    compare_key = re.sub(r'[^가-힣a-zA-Z0-9]', '', cleaned_title)
+
                     all_news_data.append({
-                        "기사 제목": entry.title,
-                        "게시일": entry.published,
-                        "링크": entry.link # 중복 제거용으로 숨겨서 가져옴
+                        "기사 제목": cleaned_title, # 언론사가 제거된 깔끔한 제목
+                        "게시일": display_date,    # YY.MM.DD (요일) 포맷
+                        "정렬시간": dt_obj,         # 시간순 정렬을 위한 실제 datetime 데이터
+                        "비교키": compare_key,       # 중복 제거 전용 키
                     })
                 
                 current_step += 1
                 progress_bar.progress(current_step / total_steps)
 
-        # ---------------------------------------------------------
-        # 5. 결과 출력 (중복 제거 및 컬럼 축소)
-        # ---------------------------------------------------------
         st.divider()
         
         if all_news_data:
-            # 1. 수집된 데이터를 판다스 데이터프레임으로 변환
             df = pd.DataFrame(all_news_data)
             
-            # 2. 기사 링크(또는 제목)를 기준으로 중복 제거 (첫 번째 기사만 남김)
-            df = df.drop_duplicates(subset=['기사 제목'], keep='first')
+            # --- 중복 제거 및 최초 보도 기사 추출 로직 ---
+            # 1. 먼저 보도된 순(오래된 시간순)으로 정렬
+            df = df.sort_values(by='정렬시간', ascending=True)
+            # 2. 내용이 같은 기사(비교키 동일) 중 첫 번째(최초 보도) 기사만 남기고 제거
+            df = df.drop_duplicates(subset=['비교키'], keep='first')
+            # 3. 보기 편하게 다시 최신 기사(가장 최근 시간)가 위로 오도록 내림차순 정렬
+            df = df.sort_values(by='정렬시간', ascending=False)
             
-            st.subheader(f"📊 수집 결과 (총 {len(df)}건)")
+            st.subheader(f"📊 수집 결과 (중복 제거 후 총 {len(df)}건)")
             
-            # 3. 화면에 보여줄 컬럼만 선택 ('기사 제목', '게시일')
+            # 화면에 보여줄 컬럼만 추출
             df_display = df[['기사 제목', '게시일']]
             
-            # 4. 데이터프레임 출력
             st.dataframe(
                 df_display,
                 use_container_width=True,
