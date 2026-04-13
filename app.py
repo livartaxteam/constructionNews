@@ -12,19 +12,33 @@ import time
 # ✏️ 🗑️ 아이콘 버튼 테두리·배경 제거
 st.markdown("""
 <style>
-/* 사이드바 내 버튼 중 ✏️ 🗑️ 아이콘만 담은 작은 버튼 → 테두리·배경 제거 */
-div[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button {
+/* 사이드바 모든 버튼 요소 테두리·배경 완전 제거 */
+section[data-testid="stSidebar"] button,
+section[data-testid="stSidebar"] button:focus,
+section[data-testid="stSidebar"] button:active,
+section[data-testid="stSidebar"] .stButton > button,
+section[data-testid="stSidebar"] .stButton > button:focus,
+section[data-testid="stSidebar"] .stButton > button:hover {
     border: none !important;
+    border-radius: 0 !important;
     background: transparent !important;
+    background-color: transparent !important;
     box-shadow: none !important;
-    padding: 0 2px !important;
+    outline: none !important;
     color: #888 !important;
-    font-size: 0.85rem !important;
-    min-height: unset !important;
+    padding: 0 !important;
 }
-div[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button:hover {
-    color: #333 !important;
-    background: transparent !important;
+section[data-testid="stSidebar"] .stButton > button:hover {
+    color: #222 !important;
+}
+/* form 제출 버튼(추가)은 스타일 유지 */
+section[data-testid="stSidebar"] .stFormSubmitButton > button {
+    border: 1px solid rgba(49,51,63,0.2) !important;
+    background-color: transparent !important;
+    box-shadow: none !important;
+    border-radius: 8px !important;
+    color: inherit !important;
+    padding: 0.4rem 0.8rem !important;
 }
 </style>
 """, unsafe_allow_html=True)
