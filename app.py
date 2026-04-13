@@ -9,51 +9,19 @@ import urllib.parse
 import re
 import time
 
-# CSS
+# 수집 시작 버튼 스타일
 st.markdown("""
 <style>
-/* ── 아이콘 버튼(✏️ 🗑️)만 타겟: key에 edit_ / del_ 포함된 버튼 ── */
-/* Streamlit은 button에 data-testid="baseButton-secondary" 를 붙임.
-   key값이 aria-label에 들어가므로 속성 선택자로 정확히 잡음 */
-section[data-testid="stSidebar"] button[aria-label^="edit_"],
-section[data-testid="stSidebar"] button[aria-label^="del_"],
-section[data-testid="stSidebar"] button[aria-label^="save_"],
-section[data-testid="stSidebar"] button[aria-label^="cancel_"] {
-    border: none !important;
-    background: transparent !important;
-    background-color: transparent !important;
-    box-shadow: none !important;
-    outline: none !important;
-    color: #aaa !important;
-    padding: 0 2px !important;
-    min-height: unset !important;
-    line-height: 1 !important;
-    border-radius: 0 !important;
-}
-section[data-testid="stSidebar"] button[aria-label^="edit_"]:hover,
-section[data-testid="stSidebar"] button[aria-label^="del_"]:hover {
-    color: #333 !important;
-    background: transparent !important;
-}
-
-/* ── 뉴스 수집 시작 버튼 ── */
-section[data-testid="stSidebar"] button[aria-label="🚀 뉴스 수집 시작"],
-section[data-testid="stSidebar"] button[kind="primaryFormSubmit"],
 section[data-testid="stSidebar"] [data-testid="baseButton-primary"] {
     background-color: #e53935 !important;
     color: white !important;
     border: 2px solid #b71c1c !important;
     border-radius: 8px !important;
     font-weight: 700 !important;
-    width: 100% !important;
-    padding: 0.55rem 1rem !important;
     box-shadow: 0 2px 6px rgba(229,57,53,0.35) !important;
-    cursor: pointer !important;
 }
-section[data-testid="stSidebar"] button[aria-label="🚀 뉴스 수집 시작"]:hover,
 section[data-testid="stSidebar"] [data-testid="baseButton-primary"]:hover {
     background-color: #b71c1c !important;
-    box-shadow: 0 3px 10px rgba(183,28,28,0.4) !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -71,8 +39,34 @@ if 'companies' not in st.session_state:
     st.session_state.companies = default_companies.copy()
 if 'editing_company' not in st.session_state:
     st.session_state.editing_company = None
-if 'all_selected' not in st.session_state:
-    st.session_state.all_selected = False
+if 'chk_states' not in st.session_state:
+    # 각 건설사 체크 상태를 세션에서 직접 관리
+    st.session_state.chk_states = {c: False for c in st.session_state.companies}
+
+def sync_chk_states():
+    """companies 변경(추가/삭제/이름변경) 시 chk_states 동기화"""
+    for c in st.session_state.companies:
+        if c not in st.session_state.chk_states:
+            st.session_state.chk_states[c] = False
+    for c in list(st.session_state.chk_states):
+        if c not in st.session_state.companies:
+            del st.session_state.chk_states[c]
+
+sync_chk_states()
+
+# query_params로 편집/삭제 액션 처리 (HTML 버튼 클릭 → URL 파라미터)
+params = st.query_params
+if "action" in params:
+    action = params.get("action")
+    target = params.get("target", "")
+    if action == "edit" and target in st.session_state.companies:
+        st.session_state.editing_company = target
+    elif action == "del" and target in st.session_state.companies:
+        st.session_state.companies.remove(target)
+        st.session_state.chk_states.pop(target, None)
+        st.session_state.editing_company = None
+    st.query_params.clear()
+    st.rerun()
 
 # ---------------------------------------------------------
 # 2. 사이드바
@@ -81,37 +75,35 @@ st.sidebar.title("🔍 검색 설정")
 st.sidebar.subheader("대상 건설사")
 st.sidebar.caption("✏️ 이름 변경  |  🗑️ 삭제")
 
-# ── 전체 선택/해제 체크박스 ──────────────────────────────
-select_all = st.sidebar.checkbox(
-    "**전체 선택 / 해제**",
-    value=st.session_state.all_selected,
-    key="select_all_chk",
-)
-# 전체 선택 상태 변경 감지 → 각 개별 체크박스 key 초기화용 플래그 저장
-if select_all != st.session_state.all_selected:
-    st.session_state.all_selected = select_all
+# ── 전체 선택/해제 ────────────────────────────────────────
+all_checked = all(st.session_state.chk_states.get(c, False) for c in st.session_state.companies)
+select_all = st.sidebar.checkbox("**전체 선택 / 해제**", value=all_checked, key="select_all_chk")
+if select_all != all_checked:
+    for c in st.session_state.companies:
+        st.session_state.chk_states[c] = select_all
     st.rerun()
 
+# ── 건설사 목록 ───────────────────────────────────────────
 selected_companies = []
 company_container = st.sidebar.container(height=220)
 with company_container:
     for comp in list(st.session_state.companies):
 
-        # 편집 모드인 건설사
+        # 편집 모드
         if st.session_state.editing_company == comp:
             new_name = st.text_input(
-                "변경할 이름",
-                value=comp,
+                "변경할 이름", value=comp,
                 key=f"edit_input_{comp}",
                 label_visibility="collapsed",
             )
-            c1, c2 = st.columns([1, 1])
+            c1, c2 = st.columns(2)
             with c1:
                 if st.button("저장", key=f"save_{comp}", use_container_width=True):
                     new_name = new_name.strip()
                     if new_name and new_name != comp:
                         idx = st.session_state.companies.index(comp)
                         st.session_state.companies[idx] = new_name
+                        st.session_state.chk_states[new_name] = st.session_state.chk_states.pop(comp, False)
                     st.session_state.editing_company = None
                     st.rerun()
             with c2:
@@ -119,27 +111,32 @@ with company_container:
                     st.session_state.editing_company = None
                     st.rerun()
 
-        # 일반 모드
+        # 일반 모드 — 체크박스 + 순수 HTML 아이콘
         else:
-            col_chk, col_edit, col_del = st.columns([5, 1, 1])
+            col_chk, col_icons = st.columns([6, 2])
             with col_chk:
-                # 전체 선택 상태면 value=True 강제
                 checked = st.checkbox(
                     comp,
-                    value=st.session_state.all_selected,
+                    value=st.session_state.chk_states.get(comp, False),
                     key=f"chk_{comp}",
                 )
+                st.session_state.chk_states[comp] = checked
                 if checked:
                     selected_companies.append(comp)
-            with col_edit:
-                if st.button("✏️", key=f"edit_{comp}", help=f"'{comp}' 이름 변경"):
-                    st.session_state.editing_company = comp
-                    st.rerun()
-            with col_del:
-                if st.button("🗑️", key=f"del_{comp}", help=f"'{comp}' 삭제"):
-                    st.session_state.companies.remove(comp)
-                    st.session_state.editing_company = None
-                    st.rerun()
+            with col_icons:
+                # 순수 HTML <a> 태그 → query_params로 액션 전달
+                # Streamlit iframe 내에서 같은 앱 URL로 이동하므로 동작함
+                import urllib.parse as _up
+                base_url = "?"
+                edit_url = base_url + _up.urlencode({"action": "edit", "target": comp})
+                del_url  = base_url + _up.urlencode({"action": "del",  "target": comp})
+                st.markdown(
+                    f'''<div style="display:flex;gap:6px;align-items:center;padding-top:4px">
+                        <a href="{edit_url}" title="이름 변경" style="text-decoration:none;font-size:14px;cursor:pointer;line-height:1">✏️</a>
+                        <a href="{del_url}"  title="삭제"     style="text-decoration:none;font-size:14px;cursor:pointer;line-height:1">🗑️</a>
+                    </div>''',
+                    unsafe_allow_html=True,
+                )
 
 # 건설사 추가 폼
 with st.sidebar.form("add_form", clear_on_submit=True):
