@@ -9,7 +9,7 @@ import re
 import concurrent.futures
 
 # ---------------------------------------------------------
-# 1. 초기 데이터 및 세션 상태(Session State) 설정
+# 1. 초기 데이터 및 세션 상태 설정
 # ---------------------------------------------------------
 default_companies = [
     "삼성물산", "현대건설", "대우건설", "디엘이앤씨", "지에스건설", 
@@ -103,13 +103,16 @@ def parse_and_format_date(date_str):
     except Exception:
         return datetime.datetime.now(), date_str
 
-# 💡 수정된 부분: 하나씩 정확하게 검색하도록 원복 (대신 스레드로 병렬 실행)
 def fetch_news_single(company, keyword, time_query, max_count):
-    search_query = f'"{company}" "{keyword}"{time_query}'
+    # 💡 핵심 수정 1: 키워드를 감싸던 큰따옴표("") 제거. 문맥 검색 허용.
+    search_query = f'"{company}" {keyword}{time_query}'
     encoded_query = urllib.parse.quote(search_query)
     rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ko&gl=KR&ceid=KR:ko"
     
-    feed = feedparser.parse(rss_url)
+    # 💡 핵심 수정 2: 구글 봇 차단을 막기 위해 일반 브라우저인 척 위장 (User-Agent)
+    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    feed = feedparser.parse(rss_url, agent=user_agent)
+    
     news_list = []
     
     for entry in feed.entries[:max_count]:
@@ -134,7 +137,7 @@ if start_crawling:
     elif not keywords:
         st.error("입력된 키워드가 없습니다.")
     else:
-        st.success("⚡ 초고속 데이터 수집을 시작합니다. 잠시만 기다려주세요...")
+        st.success("데이터 수집을 시작합니다. 잠시만 기다려주세요...")
         
         time_query = ""
         if period_option == "하루":
@@ -147,16 +150,14 @@ if start_crawling:
             time_query = f" after:{start_date} before:{end_date}"
 
         all_news_data = []
-        
-        # 모든 조합(건설사 + 키워드) 생성
         search_combinations = [(comp, kw) for comp in selected_companies for kw in keywords]
         
         progress_bar = st.progress(0)
         total_steps = len(search_combinations)
         current_step = 0
 
-        # 💡 최대 15개의 작업자를 투입하여 (건설사+키워드) 검색을 동시에 파바박! 진행합니다.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+        # 💡 핵심 수정 3: 스레드(일꾼) 수를 5개로 줄여서 구글의 Rate Limit(과도한 요청 차단) 방지
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             future_to_req = {
                 executor.submit(fetch_news_single, comp, kw, time_query, max_news_count): (comp, kw)
                 for comp, kw in search_combinations
@@ -167,10 +168,9 @@ if start_crawling:
                     data = future.result()
                     if data:
                         all_news_data.extend(data)
-                except Exception as e:
-                    pass # 오류 발생 시 패스
+                except Exception:
+                    pass
                 
-                # 진행 상태바 업데이트
                 current_step += 1
                 progress_bar.progress(current_step / total_steps)
 
@@ -182,7 +182,6 @@ if start_crawling:
         if all_news_data:
             df = pd.DataFrame(all_news_data)
             
-            # 정렬 및 중복 제거
             df = df.sort_values(by='정렬시간', ascending=True)
             df = df.drop_duplicates(subset=['비교키'], keep='first')
             df = df.sort_values(by='정렬시간', ascending=False)
