@@ -62,22 +62,7 @@ section[data-testid="stSidebar"] [data-testid="baseButton-primary"]:hover {
     background-color: #b71c1c !important;
 }
 </style>
-<script>
-(function() {
-    function fix() {
-        var sb = document.querySelector('section[data-testid="stSidebar"]');
-        if (!sb) return;
-        sb.querySelectorAll('button').forEach(function(btn) {
-            var t = (btn.innerText || '').trim();
-            if (t === '\u270f\ufe0f' || t === '\U0001f5d1\ufe0f') {
-                btn.style.cssText = 'border:none!important;background:transparent!important;box-shadow:none!important;outline:none!important;color:#aaa!important;padding:0 2px!important;border-radius:0!important;min-height:unset!important;';
-            }
-        });
-    }
-    fix();
-    new MutationObserver(fix).observe(document.body, {childList:true, subtree:true});
-})();
-</script>
+
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
@@ -101,6 +86,21 @@ def sync_chk():
             del st.session_state.chk_states[c]
 
 sync_chk()
+
+# query_params로 넘어온 edit / del 액션 처리
+_params = st.query_params
+if "action" in _params:
+    _action = _params.get("action", "")
+    _target = _params.get("target", "")
+    if _action == "edit" and _target in st.session_state.companies:
+        st.session_state.editing_company = _target
+    elif _action == "del" and _target in st.session_state.companies:
+        st.session_state.companies.remove(_target)
+        st.session_state.chk_states.pop(_target, None)
+        st.session_state.editing_company = None
+        save_settings()
+    st.query_params.clear()
+    st.rerun()
 
 # ---------------------------------------------------------
 # 2. 사이드바
@@ -154,9 +154,8 @@ with st.sidebar.container(height=220):
 
         # 일반 모드
         else:
-            col_chk, col_edit, col_del = st.columns([5, 1, 1])
+            col_chk, col_icons = st.columns([6, 2])
             with col_chk:
-                # key에 chk_ver 포함 → 전체선택 토글 시 key가 바뀌어 강제 재렌더링
                 ver = st.session_state.get("chk_ver", 0)
                 checked = st.checkbox(
                     comp,
@@ -168,17 +167,20 @@ with st.sidebar.container(height=220):
                     save_settings()
                 if checked:
                     selected_companies.append(comp)
-            with col_edit:
-                if st.button("✏️", key=f"edit_{comp}", help=f"'{comp}' 이름 변경"):
-                    st.session_state.editing_company = comp
-                    st.rerun()
-            with col_del:
-                if st.button("🗑️", key=f"del_{comp}", help=f"'{comp}' 삭제"):
-                    st.session_state.companies.remove(comp)
-                    st.session_state.chk_states.pop(comp, None)
-                    st.session_state.editing_company = None
-                    save_settings()
-                    st.rerun()
+            with col_icons:
+                # query_params 방식으로 액션 전달 — 버튼 없이 순수 HTML 링크
+                enc = urllib.parse.quote(comp)
+                st.markdown(
+                    f'''<div style="display:flex;gap:8px;padding-top:6px;line-height:1">
+                        <a href="?action=edit&target={enc}"
+                           style="text-decoration:none;font-size:15px;cursor:pointer"
+                           title="{comp} 이름 변경">✏️</a>
+                        <a href="?action=del&target={enc}"
+                           style="text-decoration:none;font-size:15px;cursor:pointer"
+                           title="{comp} 삭제">🗑️</a>
+                    </div>''',
+                    unsafe_allow_html=True,
+                )
 
 # ── 건설사 추가 ───────────────────────────────────────────
 with st.sidebar.form("add_form", clear_on_submit=True):
