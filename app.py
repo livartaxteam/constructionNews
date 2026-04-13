@@ -8,8 +8,48 @@ import pandas as pd
 import urllib.parse
 import re
 import time
+import json
+import os
 
-# 수집 시작 버튼 스타일
+# ---------------------------------------------------------
+# 영구 저장
+# ---------------------------------------------------------
+SAVE_FILE = "settings.json"
+
+DEFAULT_COMPANIES = [
+    "삼성물산", "현대건설", "대우건설", "디엘이앤씨", "지에스건설",
+    "현대엔지니어링", "포스코이앤씨", "롯데건설", "SK에코플랜트", "호반건설",
+    "HDC현대산업개발", "한화건설", "대방건설", "금호건설", "코오롱글로벌"
+]
+DEFAULT_KEYWORDS = "재건축 수주, 정비사업 시공사 선정, 아파트 분양, 재개발 사업"
+
+def load_settings():
+    if os.path.exists(SAVE_FILE):
+        try:
+            with open(SAVE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for c in DEFAULT_COMPANIES:
+                if c not in data.get("companies", []):
+                    data.setdefault("companies", []).append(c)
+            return data
+        except Exception:
+            pass
+    return {"companies": DEFAULT_COMPANIES.copy(), "keywords": DEFAULT_KEYWORDS, "chk_states": {}}
+
+def save_settings():
+    try:
+        with open(SAVE_FILE, "w", encoding="utf-8") as f:
+            json.dump({
+                "companies":  st.session_state.companies,
+                "keywords":   st.session_state.saved_keywords,
+                "chk_states": st.session_state.chk_states,
+            }, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+# ---------------------------------------------------------
+# 스타일 + JS (아이콘 버튼 테두리 제거)
+# ---------------------------------------------------------
 st.markdown("""
 <style>
 section[data-testid="stSidebar"] [data-testid="baseButton-primary"] {
@@ -24,27 +64,36 @@ section[data-testid="stSidebar"] [data-testid="baseButton-primary"]:hover {
     background-color: #b71c1c !important;
 }
 </style>
+<script>
+(function() {
+    function fix() {
+        var sb = document.querySelector('section[data-testid="stSidebar"]');
+        if (!sb) return;
+        sb.querySelectorAll('button').forEach(function(btn) {
+            var t = (btn.innerText || '').trim();
+            if (t === '\u270f\ufe0f' || t === '\U0001f5d1\ufe0f') {
+                btn.style.cssText = 'border:none!important;background:transparent!important;box-shadow:none!important;outline:none!important;color:#aaa!important;padding:0 2px!important;border-radius:0!important;min-height:unset!important;';
+            }
+        });
+    }
+    fix();
+    new MutationObserver(fix).observe(document.body, {childList:true, subtree:true});
+})();
+</script>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 1. 초기 데이터 및 세션 상태
+# 1. 세션 상태 초기화 (최초 1회)
 # ---------------------------------------------------------
-default_companies = [
-    "삼성물산", "현대건설", "대우건설", "디엘이앤씨", "지에스건설",
-    "현대엔지니어링", "포스코이앤씨", "롯데건설", "SK에코플랜트", "호반건설",
-    "HDC현대산업개발", "한화건설", "대방건설", "금호건설", "코오롱글로벌"
-]
-
-if 'companies' not in st.session_state:
-    st.session_state.companies = default_companies.copy()
-if 'editing_company' not in st.session_state:
+if "initialized" not in st.session_state:
+    cfg = load_settings()
+    st.session_state.companies       = cfg["companies"]
+    st.session_state.saved_keywords  = cfg.get("keywords", DEFAULT_KEYWORDS)
+    st.session_state.chk_states      = cfg.get("chk_states", {})
     st.session_state.editing_company = None
-if 'chk_states' not in st.session_state:
-    # 각 건설사 체크 상태를 세션에서 직접 관리
-    st.session_state.chk_states = {c: False for c in st.session_state.companies}
+    st.session_state.initialized     = True
 
-def sync_chk_states():
-    """companies 변경(추가/삭제/이름변경) 시 chk_states 동기화"""
+def sync_chk():
     for c in st.session_state.companies:
         if c not in st.session_state.chk_states:
             st.session_state.chk_states[c] = False
@@ -52,21 +101,7 @@ def sync_chk_states():
         if c not in st.session_state.companies:
             del st.session_state.chk_states[c]
 
-sync_chk_states()
-
-# query_params로 편집/삭제 액션 처리 (HTML 버튼 클릭 → URL 파라미터)
-params = st.query_params
-if "action" in params:
-    action = params.get("action")
-    target = params.get("target", "")
-    if action == "edit" and target in st.session_state.companies:
-        st.session_state.editing_company = target
-    elif action == "del" and target in st.session_state.companies:
-        st.session_state.companies.remove(target)
-        st.session_state.chk_states.pop(target, None)
-        st.session_state.editing_company = None
-    st.query_params.clear()
-    st.rerun()
+sync_chk()
 
 # ---------------------------------------------------------
 # 2. 사이드바
@@ -75,93 +110,108 @@ st.sidebar.title("🔍 검색 설정")
 st.sidebar.subheader("대상 건설사")
 st.sidebar.caption("✏️ 이름 변경  |  🗑️ 삭제")
 
-# ── 전체 선택/해제 ────────────────────────────────────────
-all_checked = all(st.session_state.chk_states.get(c, False) for c in st.session_state.companies)
+# ── 전체 선택 / 해제 ──────────────────────────────────────
+all_checked = bool(st.session_state.companies) and all(
+    st.session_state.chk_states.get(c, False) for c in st.session_state.companies
+)
 select_all = st.sidebar.checkbox("**전체 선택 / 해제**", value=all_checked, key="select_all_chk")
+
 if select_all != all_checked:
     for c in st.session_state.companies:
         st.session_state.chk_states[c] = select_all
+    save_settings()
     st.rerun()
 
 # ── 건설사 목록 ───────────────────────────────────────────
 selected_companies = []
-company_container = st.sidebar.container(height=220)
-with company_container:
+with st.sidebar.container(height=220):
     for comp in list(st.session_state.companies):
 
         # 편집 모드
         if st.session_state.editing_company == comp:
             new_name = st.text_input(
-                "변경할 이름", value=comp,
-                key=f"edit_input_{comp}",
+                "변경", value=comp, key=f"edit_input_{comp}",
                 label_visibility="collapsed",
             )
-            c1, c2 = st.columns(2)
-            with c1:
+            ca, cb = st.columns(2)
+            with ca:
                 if st.button("저장", key=f"save_{comp}", use_container_width=True):
                     new_name = new_name.strip()
                     if new_name and new_name != comp:
                         idx = st.session_state.companies.index(comp)
                         st.session_state.companies[idx] = new_name
-                        st.session_state.chk_states[new_name] = st.session_state.chk_states.pop(comp, False)
+                        st.session_state.chk_states[new_name] = \
+                            st.session_state.chk_states.pop(comp, False)
                     st.session_state.editing_company = None
+                    save_settings()
                     st.rerun()
-            with c2:
+            with cb:
                 if st.button("취소", key=f"cancel_{comp}", use_container_width=True):
                     st.session_state.editing_company = None
                     st.rerun()
 
-        # 일반 모드 — 체크박스 + 순수 HTML 아이콘
+        # 일반 모드
         else:
-            col_chk, col_icons = st.columns([6, 2])
+            col_chk, col_edit, col_del = st.columns([5, 1, 1])
             with col_chk:
+                # ★ value를 chk_states에서 읽어 전체선택과 완전 연동
                 checked = st.checkbox(
                     comp,
                     value=st.session_state.chk_states.get(comp, False),
                     key=f"chk_{comp}",
                 )
-                st.session_state.chk_states[comp] = checked
+                if checked != st.session_state.chk_states.get(comp, False):
+                    st.session_state.chk_states[comp] = checked
+                    save_settings()
                 if checked:
                     selected_companies.append(comp)
-            with col_icons:
-                # 순수 HTML <a> 태그 → query_params로 액션 전달
-                # Streamlit iframe 내에서 같은 앱 URL로 이동하므로 동작함
-                import urllib.parse as _up
-                base_url = "?"
-                edit_url = base_url + _up.urlencode({"action": "edit", "target": comp})
-                del_url  = base_url + _up.urlencode({"action": "del",  "target": comp})
-                st.markdown(
-                    f'''<div style="display:flex;gap:6px;align-items:center;padding-top:4px">
-                        <a href="{edit_url}" title="이름 변경" style="text-decoration:none;font-size:14px;cursor:pointer;line-height:1">✏️</a>
-                        <a href="{del_url}"  title="삭제"     style="text-decoration:none;font-size:14px;cursor:pointer;line-height:1">🗑️</a>
-                    </div>''',
-                    unsafe_allow_html=True,
-                )
+            with col_edit:
+                if st.button("✏️", key=f"edit_{comp}", help=f"'{comp}' 이름 변경"):
+                    st.session_state.editing_company = comp
+                    st.rerun()
+            with col_del:
+                if st.button("🗑️", key=f"del_{comp}", help=f"'{comp}' 삭제"):
+                    st.session_state.companies.remove(comp)
+                    st.session_state.chk_states.pop(comp, None)
+                    st.session_state.editing_company = None
+                    save_settings()
+                    st.rerun()
 
-# 건설사 추가 폼
+# ── 건설사 추가 ───────────────────────────────────────────
 with st.sidebar.form("add_form", clear_on_submit=True):
     new_company = st.text_input("새 건설사 추가", placeholder="건설사명 입력")
     if st.form_submit_button("➕ 추가", use_container_width=True):
-        if new_company and new_company.strip() not in st.session_state.companies:
-            st.session_state.companies.append(new_company.strip())
+        name = new_company.strip()
+        if name and name not in st.session_state.companies:
+            st.session_state.companies.append(name)
+            st.session_state.chk_states[name] = True   # 추가 즉시 선택
+            save_settings()
             st.rerun()
 
 st.sidebar.divider()
+
+# ── 검색 키워드 (변경 시 자동 저장) ──────────────────────
 st.sidebar.subheader("검색 키워드")
 keywords_input = st.sidebar.text_area(
-    "키워드 (쉼표로 구분)",
-    value="재건축 수주, 정비사업 시공사 선정, 아파트 분양, 재개발 사업",
+    "키워드",
+    value=st.session_state.saved_keywords,
     height=100,
     label_visibility="collapsed",
+    key="keywords_area",
 )
 keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
+if keywords_input != st.session_state.saved_keywords:
+    st.session_state.saved_keywords = keywords_input
+    save_settings()
 
 st.sidebar.divider()
+
+# ── 수집 기간 ─────────────────────────────────────────────
 st.sidebar.subheader("수집 기간")
 period_option = st.sidebar.radio(
     "기간", ["하루", "일주일", "한달", "직접입력"], label_visibility="collapsed"
 )
-start_date, end_date = None, None
+start_date = end_date = None
 if period_option == "직접입력":
     c1, c2 = st.sidebar.columns(2)
     with c1:
@@ -171,11 +221,8 @@ if period_option == "직접입력":
 
 st.sidebar.divider()
 max_news_count = st.sidebar.number_input("건설사별 최대 뉴스 수", min_value=1, max_value=100, value=10)
-
-debug_mode = st.sidebar.checkbox("🔧 디버그 모드 (오류 원인 표시)")
-
+debug_mode     = st.sidebar.checkbox("🔧 디버그 모드 (오류 원인 표시)")
 st.sidebar.divider()
-# 🚀 뉴스 수집 시작
 start_crawling = st.sidebar.button("🚀 뉴스 수집 시작", type="primary", use_container_width=True)
 
 # ---------------------------------------------------------
@@ -191,172 +238,102 @@ else:
     st.warning("왼쪽 메뉴에서 건설사를 1개 이상 선택해주세요.")
 
 # ---------------------------------------------------------
-# 4. RSS 수집 함수 (순차 처리 + 상세 디버그)
+# 4. 수집 함수
 # ---------------------------------------------------------
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "application/rss+xml, application/xml, text/xml, */*",
     "Accept-Language": "ko-KR,ko;q=0.9",
 }
 
-def parse_and_format_date(date_str: str):
+def parse_and_format_date(date_str):
     try:
-        dt = parsedate_to_datetime(date_str)
+        dt     = parsedate_to_datetime(date_str)
         kst_tz = timezone(timedelta(hours=9))
         dt_kst = dt.astimezone(kst_tz)
-        weekdays = ['월','화','수','목','금','토','일']
-        return dt_kst, f"{dt_kst.strftime('%y.%m.%d')} ({weekdays[dt_kst.weekday()]})"
+        days   = ['월','화','수','목','금','토','일']
+        return dt_kst, f"{dt_kst.strftime('%y.%m.%d')} ({days[dt_kst.weekday()]})"
     except Exception:
         return datetime.datetime.now(timezone(timedelta(hours=9))), date_str
 
-def get_cutoff(period: str, start_date=None, end_date=None):
-    """
-    ✅ 수정①: tbs 파라미터에 의존하지 않고 Python에서 직접 날짜 필터링.
-    Google RSS는 tbs=qdr:d 같은 파라미터를 실제로 무시하는 경우가 많음.
-    """
+def get_cutoff(period, s=None, e=None):
     kst = timezone(timedelta(hours=9))
     now = datetime.datetime.now(kst)
-    if period == "하루":
-        return now - timedelta(days=1), now
-    elif period == "일주일":
-        return now - timedelta(days=7), now
-    elif period == "한달":
-        return now - timedelta(days=30), now
-    elif period == "직접입력" and start_date and end_date:
-        dt_start = datetime.datetime.combine(start_date, datetime.time.min).replace(tzinfo=kst)
-        dt_end   = datetime.datetime.combine(end_date,   datetime.time.max).replace(tzinfo=kst)
-        return dt_start, dt_end
-    return None, None  # 전체 기간
+    if period == "하루":    return now - timedelta(days=1),  now
+    if period == "일주일":  return now - timedelta(days=7),  now
+    if period == "한달":    return now - timedelta(days=30), now
+    if period == "직접입력" and s and e:
+        return (
+            datetime.datetime.combine(s, datetime.time.min).replace(tzinfo=kst),
+            datetime.datetime.combine(e, datetime.time.max).replace(tzinfo=kst),
+        )
+    return None, None
 
-def build_query_url(company: str, keyword: str) -> str:
-    """기간 파라미터 없이 순수 키워드만 쿼리 (날짜는 Python에서 필터)"""
-    query   = f"{company} {keyword}"
-    encoded = urllib.parse.quote(query)
-    return f"https://news.google.com/rss/search?q={encoded}&hl=ko&gl=KR&ceid=KR:ko"
-
-def extract_nouns(title: str) -> set:
-    """
-    ✅ 수정②: 제목에서 2글자 이상 한글/영문 단어 추출 → 핵심어 집합 반환.
-    유사 기사 판별에 사용.
-    """
-    tokens = re.findall(r'[가-힣]{2,}|[A-Za-z0-9]{2,}', title)
-    # 불용어 제거
-    stopwords = {'기자', '뉴스', '에서', '으로', '하는', '있는', '있다', '했다',
-                 '한다', '이번', '지난', '올해', '최근', '통해', '위해', '대한'}
+def extract_nouns(title):
+    tokens    = re.findall(r'[가-힣]{2,}|[A-Za-z0-9]{2,}', title)
+    stopwords = {'기자','뉴스','에서','으로','하는','있는','있다','했다',
+                 '한다','이번','지난','올해','최근','통해','위해','대한'}
     return {t for t in tokens if t not in stopwords}
 
-def is_duplicate(title_a: str, title_b: str, threshold: float = 0.5) -> bool:
-    """
-    두 제목의 핵심어 자카드 유사도가 threshold 이상이면 중복으로 판단.
-    예) '삼성물산 대치쌍용 수주' vs '삼성물산, 대치쌍용1차 재건축 시공사 선정' → 중복
-    """
-    a = extract_nouns(title_a)
-    b = extract_nouns(title_b)
-    if not a or not b:
-        return False
-    intersection = len(a & b)
-    union        = len(a | b)
-    return (intersection / union) >= threshold
+def is_dup(a, b, thr=0.4):
+    sa, sb = extract_nouns(a), extract_nouns(b)
+    if not sa or not sb: return False
+    return len(sa & sb) / len(sa | sb) >= thr
 
-def deduplicate_smart(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    ✅ 수정②: 유사도 기반 중복 제거.
-    1단계: 비교키(정확 일치) 기준 제거
-    2단계: 핵심어 자카드 유사도 기준 추가 제거
-    최신 기사를 우선 보존.
-    """
-    # 1단계: 정확 일치 중복 제거
+def deduplicate(df):
     df = df.sort_values("정렬시간", ascending=False)
     df = df.drop_duplicates(subset=["비교키"], keep="first").reset_index(drop=True)
-
-    # 2단계: 유사도 기반 중복 제거
-    keep = []
-    titles_kept = []
+    keep, kept = [], []
     for idx, row in df.iterrows():
-        title = row["기사 제목"]
-        duplicate = False
-        for kept_title in titles_kept:
-            if is_duplicate(title, kept_title, threshold=0.4):
-                duplicate = True
-                break
-        if not duplicate:
-            keep.append(idx)
-            titles_kept.append(title)
-
+        t = row["기사 제목"]
+        if not any(is_dup(t, k) for k in kept):
+            keep.append(idx); kept.append(t)
     return df.loc[keep].reset_index(drop=True)
 
-def fetch_one(company: str, keyword: str, period: str,
-              max_count: int, start_date=None, end_date=None,
-              debug: bool = False):
-    url = build_query_url(company, keyword)
-    log = {"url": url, "http_status": None, "entries": 0, "filtered": 0, "error": None}
-
-    # ✅ 수정①: Python에서 날짜 범위 계산
-    dt_from, dt_to = get_cutoff(period, start_date, end_date)
-
+def fetch_one(company, keyword, period, max_count, s=None, e=None):
+    encoded = urllib.parse.quote(f"{company} {keyword}")
+    url     = f"https://news.google.com/rss/search?q={encoded}&hl=ko&gl=KR&ceid=KR:ko"
+    log     = {"url": url, "http_status": None, "entries": 0, "filtered": 0, "error": None}
+    dt_from, dt_to = get_cutoff(period, s, e)
+    kst = timezone(timedelta(hours=9))
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         log["http_status"] = resp.status_code
-
         if resp.status_code != 200:
-            log["error"] = f"HTTP {resp.status_code}"
-            return [], log
+            log["error"] = f"HTTP {resp.status_code}"; return [], log
         if not resp.text.strip():
-            log["error"] = "빈 응답"
-            return [], log
-
+            log["error"] = "빈 응답"; return [], log
         feed = feedparser.parse(resp.text)
         log["entries"] = len(feed.entries)
-
-        if feed.bozo and len(feed.entries) == 0:
-            log["error"] = f"파싱 실패(bozo): {feed.bozo_exception}"
-            return [], log
-
-        kst = timezone(timedelta(hours=9))
+        if feed.bozo and not feed.entries:
+            log["error"] = f"파싱 실패: {feed.bozo_exception}"; return [], log
         results = []
         for entry in feed.entries:
             pub_raw      = entry.get("published", "")
             dt_obj, disp = parse_and_format_date(pub_raw)
-
-            # ✅ 수정①: 날짜 범위 Python 필터링
             if dt_from and dt_to:
-                # dt_obj가 naive이면 KST로 변환
-                dt_check = dt_obj if dt_obj.tzinfo else dt_obj.replace(tzinfo=kst)
-                if not (dt_from <= dt_check <= dt_to):
+                chk = dt_obj if dt_obj.tzinfo else dt_obj.replace(tzinfo=kst)
+                if not (dt_from <= chk <= dt_to):
                     continue
-
-            raw_title  = entry.get("title", "제목 없음")
-            title      = raw_title.rsplit(' - ', 1)[0].strip()
-            compare_key = re.sub(r'[^가-힣A-Za-z0-9]', '', title)
-
+            title = entry.get("title", "제목 없음").rsplit(' - ', 1)[0].strip()
             results.append({
-                "건설사":    company,
-                "키워드":    keyword,
-                "기사 제목": title,
-                "게시일":    disp,
-                "정렬시간":  dt_obj,
-                "비교키":    compare_key,
-                "링크":      entry.get("link", ""),
+                "건설사": company, "키워드": keyword,
+                "기사 제목": title, "게시일": disp, "정렬시간": dt_obj,
+                "비교키": re.sub(r'[^가-힣A-Za-z0-9]', '', title),
+                "링크": entry.get("link", ""),
             })
-            if len(results) >= max_count:
-                break
-
+            if len(results) >= max_count: break
         log["filtered"] = len(results)
         return results, log
-
-    except requests.exceptions.ConnectionError as e:
-        log["error"] = f"연결 오류: {str(e)[:120]}"
-        return [], log
+    except requests.exceptions.ConnectionError as ex:
+        log["error"] = f"연결 오류: {str(ex)[:120]}"; return [], log
     except requests.exceptions.Timeout:
-        log["error"] = "Timeout (15초 초과)"
-        return [], log
-    except Exception as e:
-        log["error"] = f"알 수 없는 오류: {str(e)[:120]}"
-        return [], log
+        log["error"] = "Timeout"; return [], log
+    except Exception as ex:
+        log["error"] = f"오류: {str(ex)[:120]}"; return [], log
 
 # ---------------------------------------------------------
 # 5. 수집 실행
@@ -367,78 +344,56 @@ if start_crawling:
     elif not keywords:
         st.error("키워드를 입력해주세요.")
     else:
-        combinations  = [(c, k) for c in selected_companies for k in keywords]
-        total         = len(combinations)
-        all_news      = []
-        debug_logs    = []
-
+        combos    = [(c, k) for c in selected_companies for k in keywords]
+        total     = len(combos)
+        all_news  = []
+        dbg_logs  = []
         st.info(f"총 {total}개 조합 수집 시작… (건설사 {len(selected_companies)}개 × 키워드 {len(keywords)}개)")
-        prog = st.progress(0)
+        prog   = st.progress(0)
         status = st.empty()
-
-        # 순차 처리 (병렬 처리 시 Rate Limit 가능성 제거)
-        for i, (comp, kw) in enumerate(combinations):
+        for i, (comp, kw) in enumerate(combos):
             status.caption(f"수집 중 ({i+1}/{total}): {comp} / {kw}")
-            results, log = fetch_one(
-                comp, kw, period_option, max_news_count,
-                start_date, end_date, debug_mode
-            )
-            all_news.extend(results)
-            debug_logs.append(log)
+            res, log = fetch_one(comp, kw, period_option, max_news_count, start_date, end_date)
+            all_news.extend(res)
+            dbg_logs.append(log)
             prog.progress((i + 1) / total)
-            time.sleep(0.3)  # Rate Limit 방지
-
+            time.sleep(0.3)
         status.empty()
         st.divider()
 
-        # 디버그 모드: 요청 결과 상세 표시
         if debug_mode:
-            with st.expander("🔧 디버그 로그 (요청별 상세)", expanded=True):
-                ok    = [l for l in debug_logs if l["entries"] > 0]
-                fail  = [l for l in debug_logs if l["entries"] == 0]
-                st.write(f"✅ 성공: {len(ok)}건, ❌ 실패: {len(fail)}건")
-                if fail:
-                    st.markdown("**실패 목록:**")
-                    for l in fail[:20]:
-                        st.code(f"URL: {l['url']}\nHTTP: {l['http_status']}  오류: {l['error']}")
+            with st.expander("🔧 디버그 로그", expanded=True):
+                ok   = [l for l in dbg_logs if l["entries"] > 0]
+                fail = [l for l in dbg_logs if l["entries"] == 0]
+                st.write(f"✅ 성공: {len(ok)}건  ❌ 실패: {len(fail)}건")
+                for l in fail[:20]:
+                    st.code(f"URL: {l['url']}\nHTTP: {l['http_status']}  오류: {l['error']}")
 
-        # 결과 출력
         if all_news:
-            df = pd.DataFrame(all_news)
+            df     = pd.DataFrame(all_news)
             before = len(df)
-            df = deduplicate_smart(df)
-            after   = len(df)
-            removed = before - after
-            period_label = period_option
-            if period_option == "직접입력" and start_date and end_date:
-                period_label = f"{start_date} ~ {end_date}"
-            st.subheader(f"📊 수집 결과 — {period_label} 기준, 중복 제거 후 총 {after}건 (유사 기사 {removed}건 제거)")
+            df     = deduplicate(df)
+            after  = len(df)
+            plabel = period_option if period_option != "직접입력" else f"{start_date} ~ {end_date}"
+            st.subheader(f"📊 수집 결과 — {plabel} 기준, 총 {after}건 (유사기사 {before-after}건 제거)")
 
-            tab_labels = ["전체"] + list(df["건설사"].unique())
-            tabs       = st.tabs(tab_labels)
+            tabs = st.tabs(["전체"] + list(df["건설사"].unique()))
 
-            def show_table(data: pd.DataFrame):
+            def show_table(data):
                 rows = []
                 for _, row in data.iterrows():
-                    link  = row.get("링크", "")
+                    lnk   = row.get("링크", "")
                     title = row["기사 제목"]
-                    linked = f'<a href="{link}" target="_blank">{title}</a>' if link else title
                     rows.append({
-                        "건설사": row["건설사"],
-                        "키워드": row["키워드"],
-                        "기사 제목": linked,
+                        "건설사": row["건설사"], "키워드": row["키워드"],
+                        "기사 제목": f'<a href="{lnk}" target="_blank">{title}</a>' if lnk else title,
                         "게시일": row["게시일"],
                     })
-                st.write(
-                    pd.DataFrame(rows).to_html(escape=False, index=False),
-                    unsafe_allow_html=True,
-                )
+                st.write(pd.DataFrame(rows).to_html(escape=False, index=False), unsafe_allow_html=True)
 
-            with tabs[0]:
-                show_table(df)
+            with tabs[0]: show_table(df)
             for i, comp in enumerate(df["건설사"].unique()):
-                with tabs[i + 1]:
-                    show_table(df[df["건설사"] == comp])
+                with tabs[i + 1]: show_table(df[df["건설사"] == comp])
 
             st.divider()
             csv = df[["건설사","키워드","기사 제목","게시일","링크"]].to_csv(
@@ -452,14 +407,6 @@ if start_crawling:
         else:
             st.warning("수집된 뉴스가 없습니다.")
             if not debug_mode:
-                st.info("💡 왼쪽 사이드바 하단의 **🔧 디버그 모드**를 켜고 다시 수집하면 오류 원인을 확인할 수 있습니다.")
+                st.info("💡 사이드바 하단 **🔧 디버그 모드**를 켜고 다시 수집하면 원인을 확인할 수 있습니다.")
             else:
-                # 디버그 모드인데도 없으면 연결 자체 문제
-                st.error(
-                    "Google News RSS 연결 자체가 안 되고 있습니다.\n\n"
-                    "**해결 방법:**\n"
-                    "1. Streamlit Cloud → Settings → Secrets 에서 별도 설정 불필요\n"
-                    "2. 앱을 Reboot 해보세요 (Manage app → Reboot)\n"
-                    "3. 그래도 안 되면 Streamlit Cloud IP가 Google에 일시 차단된 것으로,\n"
-                    "   잠시 후 다시 시도하거나 네이버 Open API 연동이 필요합니다."
-                )
+                st.error("Google News RSS 연결이 안 됩니다. Manage app → Reboot 후 재시도해주세요.")
