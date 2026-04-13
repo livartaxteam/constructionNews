@@ -44,7 +44,6 @@ if st.sidebar.button("건설사 추가"):
 st.sidebar.divider()
 
 st.sidebar.subheader("검색 키워드")
-# 요청하신 새로운 기본 키워드로 변경
 default_keywords = "재건축 수주, 정비사업 시공사 선정, 아파트 분양 예정, 재개발 사업, 프리미엄 주거 단지, 하이엔드 주거 프로젝트"
 keywords_input = st.sidebar.text_area(
     "키워드 (쉼표로 구분하여 입력)",
@@ -104,30 +103,27 @@ def parse_and_format_date(date_str):
     except Exception:
         return datetime.datetime.now(), date_str
 
-# 개별 건설사 뉴스를 수집하는 함수 (멀티스레딩용)
-def fetch_company_news(company, keywords_list, time_query, max_count):
-    # 💡 핵심 속도 개선 1: 여러 키워드를 "A" OR "B" OR "C" 형태로 묶어 한 번에 검색
-    keywords_query = " OR ".join([f'"{k}"' for k in keywords_list])
-    search_query = f'"{company}" ({keywords_query}){time_query}'
-    
+# 💡 수정된 부분: 하나씩 정확하게 검색하도록 원복 (대신 스레드로 병렬 실행)
+def fetch_news_single(company, keyword, time_query, max_count):
+    search_query = f'"{company}" "{keyword}"{time_query}'
     encoded_query = urllib.parse.quote(search_query)
     rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ko&gl=KR&ceid=KR:ko"
     
     feed = feedparser.parse(rss_url)
-    company_news = []
+    news_list = []
     
     for entry in feed.entries[:max_count]:
         dt_obj, display_date = parse_and_format_date(entry.published)
         cleaned_title = entry.title.rsplit(' - ', 1)[0].strip()
         compare_key = re.sub(r'[^가-힣a-zA-Z0-9]', '', cleaned_title)
 
-        company_news.append({
+        news_list.append({
             "기사 제목": cleaned_title,
             "게시일": display_date,
             "정렬시간": dt_obj,
             "비교키": compare_key,
         })
-    return company_news
+    return news_list
 
 # ---------------------------------------------------------
 # 5. 구글 뉴스 병렬 수집 실행 로직
@@ -151,28 +147,30 @@ if start_crawling:
             time_query = f" after:{start_date} before:{end_date}"
 
         all_news_data = []
+        
+        # 모든 조합(건설사 + 키워드) 생성
+        search_combinations = [(comp, kw) for comp in selected_companies for kw in keywords]
+        
         progress_bar = st.progress(0)
-        total_steps = len(selected_companies)
+        total_steps = len(search_combinations)
         current_step = 0
 
-        # 💡 핵심 속도 개선 2: 멀티스레딩(병렬 처리)으로 여러 건설사를 동시에 검색
-        # 최대 10개의 스레드를 띄워서 동시 작업 진행 (건설사가 50개여도 순식간에 처리됨)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            # 작업 예약
-            future_to_company = {
-                executor.submit(fetch_company_news, company, keywords, time_query, max_news_count): company
-                for company in selected_companies
+        # 💡 최대 15개의 작업자를 투입하여 (건설사+키워드) 검색을 동시에 파바박! 진행합니다.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+            future_to_req = {
+                executor.submit(fetch_news_single, comp, kw, time_query, max_news_count): (comp, kw)
+                for comp, kw in search_combinations
             }
             
-            # 작업이 완료되는 대로 결과 취합
-            for future in concurrent.futures.as_completed(future_to_company):
+            for future in concurrent.futures.as_completed(future_to_req):
                 try:
                     data = future.result()
-                    all_news_data.extend(data)
+                    if data:
+                        all_news_data.extend(data)
                 except Exception as e:
-                    pass # 오류 발생 시 무시하고 진행
+                    pass # 오류 발생 시 패스
                 
-                # 프로그레스 바 업데이트 (건설사 단위)
+                # 진행 상태바 업데이트
                 current_step += 1
                 progress_bar.progress(current_step / total_steps)
 
@@ -184,6 +182,7 @@ if start_crawling:
         if all_news_data:
             df = pd.DataFrame(all_news_data)
             
+            # 정렬 및 중복 제거
             df = df.sort_values(by='정렬시간', ascending=True)
             df = df.drop_duplicates(subset=['비교키'], keep='first')
             df = df.sort_values(by='정렬시간', ascending=False)
