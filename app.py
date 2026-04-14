@@ -17,11 +17,11 @@ import os
 SAVE_FILE = "settings.json"
 
 DEFAULT_COMPANIES = [
-    "삼성물산", "현대건설", "대우건설", "GS건설",
+    "삼성물산", "현대건설", "대우건설", "GS건설", "DL이앤씨",
     "현대엔지니어링", "포스코이앤씨", "롯데건설", "SK에코플랜트", "호반건설",
     "HDC현대산업개발", "한화건설", "대방건설", "금호건설", "코오롱글로벌"
 ]
-DEFAULT_KEYWORDS = "재건축 수주, 정비사업 시공사 선정, 아파트 분양, 재개발 사업"
+DEFAULT_KEYWORDS = "재건축 수주, 정비사업 시공사 선정, 아파트 분양, 재개발 사업, 모델하우스"
 
 def load_settings():
     if os.path.exists(SAVE_FILE):
